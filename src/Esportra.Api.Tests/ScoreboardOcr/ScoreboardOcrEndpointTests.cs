@@ -26,7 +26,7 @@ using Xunit;
 namespace Esportra.Api.Tests.ScoreboardOcr;
 
 [Collection(IntegrationCollection.Name)]
-public sealed class ScoreboardOcrEndpointTests
+public sealed class ScoreboardOcrEndpointTests : IDisposable
 {
     private const string OcrResult = """
         {"game":"valorant","engineVersion":"rapidocr-test","map":{"value":{"name":"Ascent"},"confidence":0.99},
@@ -130,7 +130,22 @@ public sealed class ScoreboardOcrEndpointTests
         public bool ChangeState(string jobId, IState state, string expectedState) => true;
     }
 
-    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null) =>
+    /// <summary>Hosts a test builds are disposed with the test: each keeps a Hangfire server and database connections until then.</summary>
+    private readonly List<WebApplicationFactory<Program>> _hosts = [];
+
+    public void Dispose()
+    {
+        foreach (var host in _hosts) host.Dispose();
+    }
+
+    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null)
+    {
+        var host = BuildHost(ocr, storage, riotCheck, riot);
+        _hosts.Add(host);
+        return host;
+    }
+
+    private WebApplicationFactory<Program> BuildHost(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null) =>
         _factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureTestServices(services =>

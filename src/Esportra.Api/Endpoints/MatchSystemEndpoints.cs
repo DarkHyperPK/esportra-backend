@@ -96,7 +96,6 @@ public static class MatchSystemEndpoints
             ScoreboardReportVerifier ocrVerifier,
             IScoreboardRiotCheckTrigger riotCheck,
             IReportAutoAcceptScheduler autoAccept,
-            IProviderMatchIngestTrigger providerMatches,
             IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
@@ -220,11 +219,6 @@ public static class MatchSystemEndpoints
 
                 // The opponent has the response window to accept or dispute; after that it's accepted.
                 autoAccept.Schedule((Guid)report.id, acceptBy);
-
-                // Competitive intelligence: record which Riot match settles this game and freeze the rosters.
-                await ProviderMatchIntake.TryTournamentGameAsync(
-                    conn, providerMatches, logger, id, req.GameNumber, req.RiotMatchId,
-                    req.Team1Score, req.Team2Score, req.MapName, userCtx.UserIdGuid);
 
                 if (ocrVerification is not null)
                 {

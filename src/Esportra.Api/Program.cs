@@ -749,7 +749,7 @@ app.MapScrimScheduleEndpoints();
 app.MapScrimGameEndpoints();
 app.MapScrimRoomChatEndpoints();
 app.MapProviderMatchEndpoints();
-app.MapCareerEndpoints();
+app.MapScrimDataEndpoints();
 app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();

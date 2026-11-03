@@ -42,7 +42,29 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         }
     }
 
-    public string ConnectionString => _externalConnectionString ?? _db!.GetConnectionString();
+    /// <summary>
+    /// Every host and the seeder share one Npgsql pool per connection string, and its default cap (100) equals Postgres's default
+    /// max_connections. A burst of parallel tests could fill the pool past the server's limit ("too many clients"), so the pool is capped below it.
+    /// </summary>
+    public string ConnectionString => WithPoolCap(_externalConnectionString ?? _db!.GetConnectionString());
+
+    private const int MaxPoolSize = 60;
+
+    private NpgsqlConnectionFactory? _sharedDb;
+
+    /// <summary>
+    /// One connection factory, and so one connection pool, for every host a test builds. Each NpgsqlConnectionFactory owns its own
+    /// NpgsqlDataSource that nothing disposes, so a new factory per host leaked a pool of idle connections each time, however the host was disposed.
+    /// </summary>
+    private NpgsqlConnectionFactory SharedDb => _sharedDb ??= new NpgsqlConnectionFactory(ConnectionString);
+
+    /// <summary>The shared factory, for tests that build services by hand.</summary>
+    public IDbConnectionFactory Db => SharedDb;
+
+    private static string WithPoolCap(string connectionString) =>
+        connectionString.Contains("Maximum Pool Size", StringComparison.OrdinalIgnoreCase)
+            ? connectionString
+            : $"{connectionString.TrimEnd(';')};Maximum Pool Size={MaxPoolSize}";
 
     /// <summary>A <see cref="DbSeeder"/> pre-wired to the test database.</summary>
     public DbSeeder Seeder => new(ConnectionString);
@@ -119,7 +141,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             services.RemoveAll<Esportra.Infrastructure.Email.IEmailService>();
             services.AddSingleton<Esportra.Infrastructure.Email.IEmailService>(EmailSink);
             services.RemoveAll<IDbConnectionFactory>();
-            services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(ConnectionString));
+            services.AddSingleton<IDbConnectionFactory>(SharedDb);
         });
     }
 

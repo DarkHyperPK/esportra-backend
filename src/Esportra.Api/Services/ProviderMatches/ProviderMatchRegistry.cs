@@ -1,6 +1,4 @@
 using System.Data;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Dapper;
 
@@ -9,7 +7,6 @@ namespace Esportra.Api.Services.ProviderMatches;
 public static class ProviderMatchContext
 {
     public const string ScrimGame = "scrim_game";
-    public const string TournamentGame = "tournament_game";
 }
 
 public sealed record ProviderMatchRegistration(
@@ -25,10 +22,6 @@ public sealed record RegistrationResult(Guid AssociationId, bool NeedsIngest);
 /// </summary>
 public static class ProviderMatchRegistry
 {
-    /// <summary>Both teams' reports of one tournament game share this id.</summary>
-    public static Guid TournamentGameContextId(Guid tournamentMatchId, int gameNumber) =>
-        new(MD5.HashData(Encoding.UTF8.GetBytes($"tournament-game:{tournamentMatchId:N}:{gameNumber}")));
-
     private sealed record Existing(Guid Id, Guid MatchId, int? Team1Score, int? Team2Score, string? Map);
 
     private sealed record RosterRow(Guid CompetitorId, Guid UserId, string? MemberRole, string? Puuid);

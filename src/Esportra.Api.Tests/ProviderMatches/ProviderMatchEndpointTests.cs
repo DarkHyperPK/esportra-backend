@@ -159,32 +159,6 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
         var json = await (await As(host, s.Captain1).GetAsync($"/api/scrims/sessions/{s.SessionId}/games/1/provider-match")).Content.ReadFromJsonAsync<JsonElement>();
         json.GetProperty("status").GetString().Should().Be("none");
 
-        var t = await (await As(host, s.Outsider).GetAsync($"/api/matches/{Guid.NewGuid()}/games/1/provider-match")).Content.ReadFromJsonAsync<JsonElement>();
-        t.GetProperty("status").GetString().Should().Be("none");
-        (await As(host, s.Outsider).GetAsync($"/api/matches/{Guid.NewGuid()}/games/99/provider-match")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
-    }
-
-    [Fact]
-    public async Task Analytics_visibility_defaults_to_private_and_is_per_player()
-    {
-        var (host, _) = HostWithRecorder();
-        using var disposeHost = host;
-        var a = Guid.NewGuid();
-        var b = Guid.NewGuid();
-        await factory.Seeder.SeedAuthUserAsync(a);
-        await factory.Seeder.SeedAuthUserAsync(b);
-
-        (await As(host, a).GetFromJsonAsync<JsonElement>("/api/competitive/analytics-visibility")).GetProperty("visibility").GetString().Should().Be("private");
-        (await As(host, a).PutAsJsonAsync("/api/competitive/analytics-visibility", new { game = "valorant", visibility = "public" })).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await As(host, a).GetFromJsonAsync<JsonElement>("/api/competitive/analytics-visibility?game=valorant")).GetProperty("visibility").GetString().Should().Be("public");
-        (await As(host, b).GetFromJsonAsync<JsonElement>("/api/competitive/analytics-visibility")).GetProperty("visibility").GetString().Should().Be("private");
-
-        await using var conn = factory.Seeder.OpenConnection();
-        (await conn.ExecuteScalarAsync<bool>("SELECT consented_at IS NOT NULL FROM public.player_analytics_settings WHERE user_id = @a", new { a })).Should().BeTrue();
-        (await As(host, a).PutAsJsonAsync("/api/competitive/analytics-visibility", new { visibility = "private" })).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await conn.ExecuteScalarAsync<bool>("SELECT consented_at IS NULL FROM public.player_analytics_settings WHERE user_id = @a", new { a })).Should().BeTrue();
-        (await As(host, a).PutAsJsonAsync("/api/competitive/analytics-visibility", new { visibility = "everyone" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await As(host, a).PutAsJsonAsync("/api/competitive/analytics-visibility", new { game = "Bad Game!", visibility = "public" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -201,7 +175,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
             "INSERT INTO public.scrim_session_games (session_id, game_number, team1_score, team2_score, reported_by_team_id) VALUES (@sid, 1, 13, 7, @t)",
             new { sid = s.SessionId, t = s.Team1 });
         var matchId = Guid.NewGuid().ToString();
-        var body = new { context_type = "scrim_game", scrim_session_id = s.SessionId, game_number = 1, riot_match_id = matchId };
+        var body = new { scrim_session_id = s.SessionId, game_number = 1, riot_match_id = matchId };
 
         (await As(host, s.Captain1).PostAsJsonAsync("/api/admin/provider-matches/associations", body)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await As(host, s.Captain1).PostAsync("/api/admin/provider-matches/backfill", null)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -213,7 +187,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
             "SELECT event_type, actor_user_id FROM public.provider_match_association_events WHERE association_id = @id ORDER BY created_at LIMIT 1", new { id = trigger.Queued[0] });
         ev.Should().Be(("manual_association", admin));
 
-        (await As(host, admin).PostAsJsonAsync("/api/admin/provider-matches/associations", new { context_type = "scrim_game", scrim_session_id = s.SessionId, game_number = 1, riot_match_id = "../bad" }))
+        (await As(host, admin).PostAsJsonAsync("/api/admin/provider-matches/associations", new { scrim_session_id = s.SessionId, game_number = 1, riot_match_id = "../bad" }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await As(host, admin).PostAsync("/api/admin/provider-matches/backfill?limit=5", null)).StatusCode.Should().Be(HttpStatusCode.OK);
     }

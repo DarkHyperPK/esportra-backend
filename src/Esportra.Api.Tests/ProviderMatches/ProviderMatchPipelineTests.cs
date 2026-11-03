@@ -235,17 +235,6 @@ public sealed class ProviderMatchPipelineTests(ApiFactory factory)
     }
 
     [Fact]
-    public async Task Tournament_reports_of_one_game_share_one_association()
-    {
-        var a = ProviderMatchRegistry.TournamentGameContextId(Guid.Parse("6f1c5a3e-0000-4000-8000-000000000001"), 2);
-        var b = ProviderMatchRegistry.TournamentGameContextId(Guid.Parse("6f1c5a3e-0000-4000-8000-000000000001"), 2);
-        var c = ProviderMatchRegistry.TournamentGameContextId(Guid.Parse("6f1c5a3e-0000-4000-8000-000000000001"), 3);
-        a.Should().Be(b);
-        a.Should().NotBe(c);
-        await Task.CompletedTask;
-    }
-
-    [Fact]
     public async Task Events_are_append_only()
     {
         var s = await SeedAsync();

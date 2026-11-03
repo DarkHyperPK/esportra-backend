@@ -84,7 +84,7 @@ public sealed class RiotIdEventRefreshTests(ApiFactory factory)
         var (userId, _) = await SeedLinkedUserAsync("Chk");
         var tournamentId = await SeedCheckInTournamentAsync(userId);
         var trigger = new RecordingTrigger();
-        var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s => s.AddScoped<IRiotIdRefreshTrigger>(_ => trigger)));
+        using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s => s.AddScoped<IRiotIdRefreshTrigger>(_ => trigger)));
 
         var response = await Authenticated(app, userId).PostAsync($"/api/tournaments/{tournamentId}/check-in", null);
 

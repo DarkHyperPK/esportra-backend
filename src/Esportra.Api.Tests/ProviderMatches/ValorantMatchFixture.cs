@@ -24,7 +24,8 @@ internal static class ValorantMatchFixture
         int redRounds = 7,
         IEnumerable<Round>? rounds = null,
         IEnumerable<int>? observers = null,
-        long startMillis = 1_761_000_000_000L)
+        long startMillis = 1_761_000_000_000L,
+        Func<int, string>? agentOf = null)
     {
         var roundList = (rounds ?? []).ToList();
         var obs = observers?.ToHashSet() ?? [];
@@ -38,7 +39,7 @@ internal static class ValorantMatchFixture
                 ["tagLine"] = "EUW",
                 ["teamId"] = Side(i),
                 ["partyId"] = "party",
-                ["characterId"] = "add6443a-41bd-e414-f6ad-e58d267f4e95",
+                ["characterId"] = agentOf?.Invoke(i) ?? "add6443a-41bd-e414-f6ad-e58d267f4e95",
                 ["competitiveTier"] = 0,
                 ["isObserver"] = obs.Contains(i),
                 ["stats"] = new JsonObject

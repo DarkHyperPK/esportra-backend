@@ -45,6 +45,9 @@ public static class ProviderMatchVerifier
         ["Infinity"] = "Abyss",
     };
 
+    /// <summary>Display names of the competitive maps this project can identify from Riot's internal names.</summary>
+    public static IReadOnlyCollection<string> KnownMapNames => MapNames.Values;
+
     public static string? DisplayMap(string? mapId)
     {
         var code = mapId?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();

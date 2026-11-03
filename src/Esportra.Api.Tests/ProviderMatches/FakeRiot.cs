@@ -1,7 +1,6 @@
 using System.Net;
 using Esportra.Api.ScheduledJobs;
 using Esportra.Api.Tests.Infrastructure;
-using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
 using Hangfire;
 using Hangfire.Common;
@@ -39,7 +38,7 @@ internal sealed class FakeRiot : HttpMessageHandler, IBackgroundJobClient
         collection.AddHybridCache();
         using var services = collection.BuildServiceProvider();
         var job = new ProviderMatchIngestJob(
-            new NpgsqlConnectionFactory(factory.ConnectionString), riot, services.GetRequiredService<HybridCache>(), this,
+            factory.Db, riot, services.GetRequiredService<HybridCache>(), this,
             NullLogger<ProviderMatchIngestJob>.Instance);
         await job.RunAsync(associationId, attempt, CancellationToken.None);
     }

@@ -19,7 +19,7 @@ using Xunit;
 namespace Esportra.Api.Tests.ScoreboardOcr;
 
 [Collection(IntegrationCollection.Name)]
-public sealed class ScoreboardOcrDebugEndpointTests
+public sealed class ScoreboardOcrDebugEndpointTests : IDisposable
 {
     private const string OcrResult = """{"game":"valorant","engineVersion":"rapidocr-test","players":[],"allyScore":{"value":13,"confidence":0.9}}""";
     private static readonly byte[] Png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
@@ -66,7 +66,22 @@ public sealed class ScoreboardOcrDebugEndpointTests
         }
     }
 
-    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, IRiotMatchLookup? riot = null) =>
+    /// <summary>Hosts a test builds are disposed with the test: each keeps a Hangfire server and database connections until then.</summary>
+    private readonly List<WebApplicationFactory<Program>> _hosts = [];
+
+    public void Dispose()
+    {
+        foreach (var host in _hosts) host.Dispose();
+    }
+
+    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, IRiotMatchLookup? riot = null)
+    {
+        var host = BuildHost(ocr, storage, riot);
+        _hosts.Add(host);
+        return host;
+    }
+
+    private WebApplicationFactory<Program> BuildHost(StubHandler ocr, StubHandler storage, IRiotMatchLookup? riot = null) =>
         _factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ScoreboardOcr:BaseUrl", "http://ocr.test:8095");
