@@ -18,6 +18,7 @@ public sealed class ValorantMapCatalogRefresher(IHttpClientFactory http, Esportr
             if (since >= Daily || (ValorantMaps.UnknownSeen && since >= RetryAfterUnknown))
             {
                 await RefreshAsync(stoppingToken);
+                await LearnFromGameMapsAsync(stoppingToken);
                 await LearnFromPoolAsync(stoppingToken);
                 last = DateTime.UtcNow;
             }
@@ -43,6 +44,30 @@ public sealed class ValorantMapCatalogRefresher(IHttpClientFactory http, Esportr
         }
     }
 
+    /// <summary>
+    /// Seeds ValorantMaps from game_maps rows that carry a map_provider_code. This is the primary
+    /// DB-backed path: admin adds a new map with its Riot code and it resolves everywhere on the next
+    /// cycle without any external API call. Runs after RefreshAsync so the external list wins when both
+    /// know a map, but fills the gap when the external API is unreachable or behind.
+    /// </summary>
+    public async Task LearnFromGameMapsAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var conn = db.CreateConnection();
+            var pairs = await Dapper.SqlMapper.QueryAsync<PoolPair>(conn, new Dapper.CommandDefinition(GameMapsSql, cancellationToken: ct));
+            var toLearn = pairs.Where(p => ValorantMaps.DisplayName(p.Code) is null).ToList();
+            ValorantMaps.LearnFromPool(toLearn.Select(p => (p.Code, p.Name)));
+            if (toLearn.Count > 0)
+                logger.LogInformation("Learned {Count} new VALORANT map code(s) from game_maps: {Maps}.",
+                    toLearn.Count, string.Join(", ", toLearn.Select(p => p.Name)));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not learn map names from game_maps.");
+        }
+    }
+
     /// <summary>Names maps Riot's list lacks from the catalog's own pool: verified scrim games whose Riot map code is unnamed and whose recorded map is one pool name, every time.</summary>
     public async Task LearnFromPoolAsync(CancellationToken ct)
     {
@@ -59,6 +84,14 @@ public sealed class ValorantMapCatalogRefresher(IHttpClientFactory http, Esportr
     }
 
     private sealed record PoolPair(string Code, string Name);
+
+    internal const string GameMapsSql =
+        """
+        SELECT map_provider_code AS Code, map_name AS Name
+        FROM public.game_maps
+        WHERE lower(game) = 'valorant' AND is_active = TRUE
+          AND map_provider_code IS NOT NULL AND map_provider_code <> ''
+        """;
 
     internal const string PoolPairsSql =
         """

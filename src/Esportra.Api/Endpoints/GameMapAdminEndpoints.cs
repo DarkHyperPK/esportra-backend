@@ -39,7 +39,7 @@ public static class GameMapAdminEndpoints
             {
                 maps = await conn.QueryAsync<dynamic>(
                     """
-                    SELECT id, game, map_name, map_image_url, is_active, created_at
+                    SELECT id, game, map_name, map_image_url, map_provider_code, is_active, created_at
                     FROM game_maps
                     WHERE game ILIKE @game
                     ORDER BY game, map_name
@@ -50,7 +50,7 @@ public static class GameMapAdminEndpoints
             {
                 maps = await conn.QueryAsync<dynamic>(
                     """
-                    SELECT id, game, map_name, map_image_url, is_active, created_at
+                    SELECT id, game, map_name, map_image_url, map_provider_code, is_active, created_at
                     FROM game_maps
                     ORDER BY game, map_name
                     """);
@@ -92,13 +92,14 @@ public static class GameMapAdminEndpoints
             if (exists)
                 return Results.Conflict(new { error = $"Map '{req.MapName}' already exists for {req.Game}." });
 
+            var providerCode = string.IsNullOrWhiteSpace(req.MapProviderCode) ? null : req.MapProviderCode.Trim();
             var mapId = await conn.QuerySingleAsync<Guid>(
                 """
-                INSERT INTO game_maps (game, map_name, is_active)
-                VALUES (@game, @mapName, @isActive)
+                INSERT INTO game_maps (game, map_name, map_provider_code, is_active)
+                VALUES (@game, @mapName, @providerCode, @isActive)
                 RETURNING id
                 """,
-                new { game = req.Game, mapName = req.MapName, isActive = req.IsActive ?? true });
+                new { game = req.Game, mapName = req.MapName, providerCode, isActive = req.IsActive ?? true });
 
             await audit.LogAsync(
                 userCtx!.UserIdGuid, userCtx.Email,
@@ -139,6 +140,12 @@ public static class GameMapAdminEndpoints
             {
                 updates.Add("map_name = @mapName");
                 parameters.Add("mapName", req.MapName);
+            }
+
+            if (req.MapProviderCode is not null)
+            {
+                updates.Add("map_provider_code = @providerCode");
+                parameters.Add("providerCode", string.IsNullOrWhiteSpace(req.MapProviderCode) ? null : req.MapProviderCode.Trim());
             }
 
             if (req.IsActive.HasValue)
@@ -336,6 +343,7 @@ public static class GameMapAdminEndpoints
             game,
             map_name = mapName,
             map_image_url = imageUrl,
+            map_provider_code = (string?)map.map_provider_code,
             is_active = (bool)map.is_active,
             created_at = map.created_at
         };
@@ -355,6 +363,6 @@ public static class GameMapAdminEndpoints
         _ => Slugify(game)
     };
 
-    public sealed record CreateMapRequest(string Game, string MapName, bool? IsActive);
-    public sealed record UpdateMapRequest(string? MapName, bool? IsActive);
+    public sealed record CreateMapRequest(string Game, string MapName, bool? IsActive, string? MapProviderCode);
+    public sealed record UpdateMapRequest(string? MapName, bool? IsActive, string? MapProviderCode);
 }
