@@ -485,6 +485,7 @@ builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
 builder.Services.AddHostedService<ValorantRoleIconSeedService>();
 builder.Services.AddHttpClient("ValorantMaps");
+builder.Services.AddHttpClient("ValorantApi");
 builder.Services.AddHostedService<Esportra.Api.Services.ValorantMapCatalogRefresher>();
 builder.Services.AddScoped<Esportra.Core.Broadcast.IBroadcastEnrollmentRepository, BroadcastEnrollmentRepository>();
 builder.Services.AddHostedService<BroadcastEnrollmentJob>();

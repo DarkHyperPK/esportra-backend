@@ -584,7 +584,7 @@ public sealed class ValorantStatsSyncService(
                 "valorant:current-act:v2",
                 async _ =>
                 {
-                    var client = httpFactory.CreateClient();
+                    var client = httpFactory.CreateClient("ValorantApi");
                     using var resp = await client.GetAsync(ValorantSeasonsUrl, ct);
                     resp.EnsureSuccessStatusCode();
                     var stream = await resp.Content.ReadAsStreamAsync(ct);
@@ -636,7 +636,7 @@ public sealed class ValorantStatsSyncService(
                 var map = new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
                 try
                 {
-                    var client = httpFactory.CreateClient();
+                    var client = httpFactory.CreateClient("ValorantApi");
                     using var response = await client.GetAsync(ValorantAgentsUrl, ct);
                     if (!response.IsSuccessStatusCode) return map;
 
