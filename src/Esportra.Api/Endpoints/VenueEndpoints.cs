@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -40,12 +41,17 @@ public static class VenueEndpoints
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
             // If owned=true, resolve owner from JWT
+            var callerCtx = ctx.Items["UserContext"] as UserContext;
             Guid? effectiveOwnerId = owner_id;
             if (owned == true && effectiveOwnerId is null)
-            {
-                var userCtx = ctx.Items["UserContext"] as UserContext;
-                effectiveOwnerId = userCtx?.UserIdGuid;
-            }
+                effectiveOwnerId = callerCtx?.UserIdGuid;
+
+            // Unpublished venues (drafts, pending, rejected) are visible only to their
+            // owner and platform admins. Filtering by someone else's owner_id still
+            // works, but returns their published venues only.
+            var includeUnpublished = effectiveOwnerId is not null
+                && callerCtx is not null
+                && (effectiveOwnerId == callerCtx.UserIdGuid || StaffAuthHelper.IsPlatformAdmin(callerCtx));
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -58,14 +64,14 @@ public static class VenueEndpoints
                 FROM venues
                 WHERE deleted_at IS NULL
                   AND (@ownerId IS NULL OR owner_id = @ownerId)
-                  AND (@ownerId IS NOT NULL OR status = 'published')
+                  AND (@includeUnpublished OR status = 'published')
                   AND (@q IS NULL OR name ILIKE '%' || @q || '%' OR description ILIKE '%' || @q || '%')
                   AND (@city IS NULL OR city ILIKE '%' || @city || '%')
                   AND (@country IS NULL OR country ILIKE '%' || @country || '%')
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { ownerId = effectiveOwnerId, q, city, country, limit, offset });
+                new { ownerId = effectiveOwnerId, includeUnpublished, q, city, country, limit, offset });
             return Results.Ok(rows);
         });
 
@@ -167,14 +173,24 @@ public static class VenueEndpoints
         });
 
         // ── POST /api/venues — create ——————————————————————————————————————
+        // Self-serve: any authenticated user may list a venue. Listing assigns the
+        // venue_owner role (user_roles + verified_roles) in the same transaction, the
+        // same way creating an organization assigns organizer. The venue itself is
+        // never public until an admin approves it (status draft / pending_review).
         app.MapPost("/api/venues", async (
             [FromBody] CreateVenueRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            // Owners may only save a draft or submit for review; approval is admin-only.
+            var initialStatus = string.Equals(req.Status, "pending_review", StringComparison.OrdinalIgnoreCase)
+                ? "pending_review"
+                : "draft";
 
             using var conn = db.CreateConnection();
 
@@ -188,6 +204,8 @@ public static class VenueEndpoints
                 if (exists == 0) break;
                 if (attempt >= 5) return Results.Problem("Unable to generate unique venue ID. Please retry.");
             }
+
+            using var tx = conn.BeginTransaction();
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -233,9 +251,33 @@ public static class VenueEndpoints
                     currency = req.Currency ?? "USD",
                     latitude = req.Latitude,
                     longitude = req.Longitude,
-                    status = "draft",
-                    submittedAt = req.SubmittedAt,
-                });
+                    status = initialStatus,
+                    submittedAt = initialStatus == "pending_review" ? req.SubmittedAt : null,
+                },
+                tx);
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, 'venue_owner', TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId = userCtx.UserIdGuid },
+                tx);
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active)
+                VALUES (@userId, 'venue_owner'::app_role, 'approved', TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE
+                """,
+                new { userId = userCtx.UserIdGuid },
+                tx);
+
+            tx.Commit();
+
+            // Evict cached UserContext so the venue_owner role is visible immediately.
+            try { await cache.RemoveAsync($"user-ctx:{userCtx.UserId}", ct); } catch { /* best effort */ }
 
             return Results.Created($"/api/venues/{row.slug}", row);
         }).RequireAuthorization("Authenticated");

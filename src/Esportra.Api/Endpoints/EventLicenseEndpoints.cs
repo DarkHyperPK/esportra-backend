@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -10,6 +11,7 @@ namespace Esportra.Api.Endpoints;
 /// <summary>
 /// Event licensing endpoints (PROJ-058).
 /// BE-4: GET  /api/my/event-licenses/quota
+/// GET  /api/tournaments/{id}/organizer-pro
 /// BE-10: POST /api/admin/tournaments/{id}/organizer-pro
 /// </summary>
 public static class EventLicenseEndpoints
@@ -61,6 +63,35 @@ public static class EventLicenseEndpoints
                 resetsAt = resetsAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 isOrganizerPro,
             });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/tournaments/{id}/organizer-pro ──────────────────────────
+        // Per-tournament Organizer Pro state for the organizer console, using the same
+        // rule the gated endpoints enforce (EventLicenseService.IsOrganizerProAsync:
+        // pro enabled, or no license row = grandfathered). Organizer, org owner,
+        // tournament staff and platform admins only.
+        app.MapGet("/api/tournaments/{id:guid}/organizer-pro", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            EventLicenseService licenseService,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var exists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND deleted_at IS NULL)",
+                new { id });
+            if (!exists) return Results.NotFound();
+
+            if (!StaffAuthHelper.IsPlatformAdmin(userCtx)
+                && !await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, id))
+                return Results.Forbid();
+
+            var isOrganizerPro = await licenseService.IsOrganizerProAsync(id, ct);
+            return Results.Ok(new { tournamentId = id, isOrganizerPro });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/admin/tournaments/{id}/organizer-pro ────────────────────
