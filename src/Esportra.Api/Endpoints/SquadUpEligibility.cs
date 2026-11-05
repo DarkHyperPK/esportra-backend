@@ -14,7 +14,7 @@ public sealed record SquadUpPreferences(
     [property: JsonPropertyName("areas")] string[]? Areas = null);
 
 /// <summary>The player's facts that matching relies on, all read from the server, never from the client.</summary>
-internal sealed record SquadUpPlayer(bool Linked, int? Tier, string? Region, string? Country);
+internal sealed record SquadUpPlayer(bool Linked, int? Tier, string? Region, string? Country, string? StatsSyncStatus);
 
 /// <summary>Validated preferences, normalised: game, mode and area known.</summary>
 internal sealed record SquadUpFilters(string Game, string Mode, string Area, int? MinTier, int? MaxTier, string[]? Areas = null);
@@ -45,7 +45,10 @@ internal static class SquadUpEligibility
                     WHERE pgs.user_id = @userId AND pgs.game_slug = 'valorant'
                       AND EXISTS (SELECT 1 FROM public.riot_accounts l WHERE l.user_id = pgs.user_id AND l.puuid = pgs.provider_player_id)) AS tier,
                    (SELECT lower(region) FROM public.riot_accounts WHERE user_id = @userId) AS region,
-                   (SELECT upper(country_code) FROM public.profiles WHERE id = @userId) AS country
+                   (SELECT upper(country_code) FROM public.profiles WHERE id = @userId) AS country,
+                   (SELECT pgs.sync_status FROM public.player_game_stats pgs
+                    WHERE pgs.user_id = @userId AND pgs.game_slug = 'valorant'
+                      AND EXISTS (SELECT 1 FROM public.riot_accounts l WHERE l.user_id = pgs.user_id AND l.puuid = pgs.provider_player_id)) AS stats_sync_status
             """, new { userId }, tx);
 
     /// <returns>Normalised filters, or an error code for a 400.</returns>
@@ -78,7 +81,11 @@ internal static class SquadUpEligibility
     public static async Task<IResult?> CheckAsync(IDbConnection conn, Guid userId, SquadUpPlayer player, SquadUpFilters filters)
     {
         if (!player.Linked) return Results.UnprocessableEntity(new { error = "RIOT_NOT_LINKED" });
-        if (filters.Mode == "competitive" && player.Tier is null) return Results.UnprocessableEntity(new { error = "NOT_RANKED" });
+        if (filters.Mode == "competitive" && player.Tier is null)
+        {
+            var notYetSynced = player.StatsSyncStatus is null or "pending" or "syncing";
+            return Results.UnprocessableEntity(new { error = notYetSynced ? "STATS_NOT_SYNCED" : "NOT_RANKED" });
+        }
         if (string.IsNullOrWhiteSpace(player.Region)) return Results.UnprocessableEntity(new { error = "REGION_UNKNOWN" });
         var restrictions = (await conn.QueryAsync<DateTime?>(
             "SELECT until FROM public.squad_up_restrictions WHERE user_id = @userId AND lifted_at IS NULL AND (until IS NULL OR until > now()) ORDER BY until DESC NULLS FIRST",

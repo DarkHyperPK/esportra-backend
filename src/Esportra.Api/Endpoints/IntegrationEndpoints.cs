@@ -73,6 +73,7 @@ public static class IntegrationEndpoints
             IConfiguration config,
             OAuthStateProtector stateProtector,
             IDbConnectionFactory db,
+            ValorantSyncRequestService syncRequests,
             HttpClient http,
             CancellationToken ct) =>
         {
@@ -184,6 +185,9 @@ public static class IntegrationEndpoints
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET riot_tag = @riotTag WHERE id = @userId",
                 new { riotTag, userId = userGuid });
+
+            // Queue a stats sync so Squad Up competitive mode is available immediately after linking.
+            try { await syncRequests.RequestAsync(userGuid, ct); } catch { /* non-blocking */ }
 
             return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=success");
         }); // Public — Riot redirect has no JWT

@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
@@ -45,7 +46,7 @@ public static class LfgSwipeEndpoints
 
     private static async Task<IResult> StartSessionAsync(
         [FromBody] StartSwipeSessionRequest? req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory)
+        ValorantSyncRequestService sync, IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory)
     {
         if (CallerId(ctx) is not { } userId) return Results.Unauthorized();
         if (req is null || req.SlotsNeeded is < 1 or > 4)
@@ -57,6 +58,8 @@ public static class LfgSwipeEndpoints
         if (filters is null) return Results.BadRequest(new { error = filterError });
         var (note, noteError) = SquadUpEligibility.NormaliseNote(req.Note);
         if (noteError is not null) return Results.BadRequest(new { error = noteError });
+        if (player.Linked && player.Tier is null && player.StatsSyncStatus is null or "pending" or "syncing")
+            await sync.RequestAsync(userId, CancellationToken.None);
         var refused = await SquadUpEligibility.CheckAsync(conn, userId, player, filters);
         if (refused is not null) return refused;
 
