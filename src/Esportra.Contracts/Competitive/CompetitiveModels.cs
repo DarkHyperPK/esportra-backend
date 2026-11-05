@@ -441,3 +441,81 @@ public sealed record ScrimTimeProposalRow
     public string Status { get; init; } = "pending";
     public DateTime CreatedAt { get; init; }
 }
+
+// ── LFG Queue Now (swipe matching) ──────────────────────────────────────────────
+// Property-init records: Dapper hydrates them from multi-JOIN queries by name, which avoids
+// constructor type matching (int2/int4, timestamptz/DateTime).
+
+public sealed record LfgSwipeSessionDto
+{
+    public Guid Id { get; init; }
+    public string GameSlug { get; init; } = "";
+    public string Region { get; init; } = "";
+    public int CompetitiveTier { get; init; }
+    public bool MicOn { get; init; }
+    public int SlotsNeeded { get; init; }
+    public DateTime StartedAt { get; init; }
+    public DateTime LastHeartbeat { get; init; }
+}
+
+public sealed record LfgSwipeCardDto
+{
+    public Guid UserId { get; init; }
+    public string Username { get; init; } = "";
+    public string? AvatarSeed { get; init; }
+    public string? AvatarUrl { get; init; }
+    public string? AvatarStyle { get; init; }
+    public int CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public string? CompetitiveTierIconUrl { get; init; }
+    public decimal? WinRate { get; init; }
+    public decimal? KdRatio { get; init; }
+    public decimal? HsPct { get; init; }
+    public int MatchesAnalyzed { get; init; }
+    public string? RiotGameName { get; init; }
+    public string? RiotTagLine { get; init; }
+    public string? Region { get; init; }
+    public string? RegionDisplayName { get; init; }
+    public string? PopularAgents { get; init; }
+    public bool MicOn { get; init; }
+    public int SlotsNeeded { get; init; }
+    /// <summary>great_synergy | role_overlap | unknown</summary>
+    public string SynergyLabel { get; init; } = "unknown";
+    public int SynergyScore { get; init; }
+    public bool LikedYou { get; init; }
+}
+
+public sealed record LfgSwipeMatchDto
+{
+    public Guid MatchId { get; init; }
+    public Guid? ConversationId { get; init; }
+    public DateTime MatchedAt { get; init; }
+    public Guid MatchedUserId { get; init; }
+    public string MatchedUsername { get; init; } = "";
+    public string? MatchedAvatarUrl { get; init; }
+    public string? MatchedAvatarStyle { get; init; }
+    public int? CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public string? CompetitiveTierIconUrl { get; init; }
+    public string? RiotGameName { get; init; }
+    public string? RiotTagLine { get; init; }
+    public string? PopularAgents { get; init; }
+    public bool? MicOn { get; init; }
+    public int? SlotsNeeded { get; init; }
+}
+
+public sealed record LfgSwipeStatsDto
+{
+    public int SwipesRight { get; init; }
+    public int SwipesLeft { get; init; }
+    public int MatchesCount { get; init; }
+    public int DurationSeconds { get; init; }
+}
+
+public sealed record LfgSwipeResultDto
+{
+    public bool Matched { get; init; }
+    public LfgSwipeMatchDto? Match { get; init; }
+    public bool SessionEnded { get; init; }
+    public LfgSwipeStatsDto? Stats { get; init; }
+}

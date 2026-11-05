@@ -747,6 +747,7 @@ app.MapCompetitiveProfileEndpoints();
 app.MapCatalogCompetitiveEndpoints();
 app.MapAvailabilityEndpoints();
 app.MapLfgEndpoints();
+app.MapLfgSwipeEndpoints();
 app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
 app.MapScrimEndpoints();

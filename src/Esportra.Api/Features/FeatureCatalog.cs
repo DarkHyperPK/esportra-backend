@@ -84,6 +84,13 @@ public static class FeatureCatalog
         "Competitive",
         []);
 
+    public static readonly FeatureMeta LfgQueue = new(
+        "lfg_queue",
+        "LFG Queue Now",
+        "Live swipe-style LFG matching (Valorant). Off blocks /api/competitive/lfg/swipe routes.",
+        "Competitive",
+        []);
+
     public static readonly FeatureMeta Recruitment = new(
         "recruitment",
         "Team Recruitment",
@@ -124,6 +131,7 @@ public static class FeatureCatalog
         GhostMode,
         CompetitiveProfiles,
         Lfg,
+        LfgQueue,
         Recruitment,
         Tryouts,
         Scrims,

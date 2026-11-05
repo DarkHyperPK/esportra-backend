@@ -627,6 +627,29 @@ public sealed class ValorantStatsSyncService(
         return new ActInfo(current.Id, current.Start);
     }
 
+    private sealed record AgentRoleRow(string AgentId, string DisplayName, string RoleKey, string IconUrl);
+
+    /// <summary>Keeps game_catalog_agents current so Queue Now synergy knows newly released agents.</summary>
+    private async Task UpsertAgentRolesAsync(List<AgentRoleRow> roles)
+    {
+        if (roles.Count == 0) return;
+        try
+        {
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.game_catalog_agents (game_slug, agent_id, display_name, role_key, icon_url)
+                VALUES ('valorant', @AgentId, @DisplayName, @RoleKey, @IconUrl)
+                ON CONFLICT (game_slug, agent_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name, role_key = EXCLUDED.role_key, icon_url = EXCLUDED.icon_url
+                """, roles);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "ValorantStatsSync: could not update game_catalog_agents");
+        }
+    }
+
     private async Task<Dictionary<string, (string Name, string IconUrl)>> GetAgentMapAsync(CancellationToken ct)
     {
         return await cache.GetOrCreateAsync(
@@ -634,6 +657,7 @@ public sealed class ValorantStatsSyncService(
             async _ =>
             {
                 var map = new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
+                var roles = new List<AgentRoleRow>();
                 try
                 {
                     var client = httpFactory.CreateClient("ValorantApi");
@@ -655,12 +679,17 @@ public sealed class ValorantStatsSyncService(
 
                         if (uuid is null || displayName is null || displayIcon is null) continue;
                         map.TryAdd(uuid.ToLowerInvariant(), (displayName, displayIcon));
+                        var role = agent.TryGetProperty("role", out var r) && r.ValueKind == JsonValueKind.Object
+                            && r.TryGetProperty("displayName", out var rn) ? rn.GetString()?.ToLowerInvariant() : null;
+                        if (role is "duelist" or "initiator" or "controller" or "sentinel")
+                            roles.Add(new AgentRoleRow(uuid.ToLowerInvariant(), displayName, role, displayIcon));
                     }
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "ValorantStatsSync: could not fetch agent map from valorant-api.com");
                 }
+                await UpsertAgentRolesAsync(roles);
                 return map;
             },
             new HybridCacheEntryOptions { Expiration = TimeSpan.FromHours(6) },
