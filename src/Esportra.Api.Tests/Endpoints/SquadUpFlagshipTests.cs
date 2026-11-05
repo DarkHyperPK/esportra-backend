@@ -114,7 +114,7 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
     {
         var competitive = await Queued();
         var unrated = await Queued(mode: "unrated");
-        var unranked = await NewPlayer(tier: null, stats: false);
+        var unranked = await NewPlayer(tier: null, stats: true);
         (await Error(await Start(unranked))).Should().Be("NOT_RANKED");
         (await Start(unranked, "unrated")).StatusCode.Should().Be(HttpStatusCode.OK);
 
