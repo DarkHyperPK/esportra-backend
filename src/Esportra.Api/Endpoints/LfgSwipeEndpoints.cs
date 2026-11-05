@@ -45,7 +45,7 @@ public static class LfgSwipeEndpoints
 
     private static async Task<IResult> StartSessionAsync(
         [FromBody] StartSwipeSessionRequest? req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> notifHub)
+        IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory)
     {
         if (CallerId(ctx) is not { } userId) return Results.Unauthorized();
         if (req is null || req.SlotsNeeded is < 1 or > 4)
@@ -103,7 +103,7 @@ public static class LfgSwipeEndpoints
             }, tx);
         if (!alreadyLive) await SquadUpStats.BumpAsync(conn, session.Region, SquadUpCounter.SessionsStarted, tx);
         tx.Commit();
-        await PushPoolUpdatedAsync(notifHub, conn, userId, session.GameSlug, session.Region, sessionAreas);
+        await PushPoolUpdatedAsync(notifHub, conn, loggerFactory.CreateLogger("SquadUp"), userId, session.GameSlug, session.Mode, session.Region, sessionAreas);
         return Results.Ok(session);
     }
 
@@ -260,7 +260,8 @@ public static class LfgSwipeEndpoints
     /// not checked here — the Cards query handles that). Fire-after-commit; non-critical.
     /// </summary>
     private static async Task PushPoolUpdatedAsync(
-        IHubContext<NotificationHub> hub, IDbConnection conn, Guid newUserId, string game, string region, string[] areas)
+        IHubContext<NotificationHub> hub, IDbConnection conn, ILogger logger,
+        Guid newUserId, string game, string mode, string region, string[] areas)
     {
         try
         {
@@ -268,19 +269,19 @@ public static class LfgSwipeEndpoints
                 $"""
                 SELECT DISTINCT s.user_id
                 FROM public.lfg_swipe_sessions s
-                WHERE s.game_slug = @game AND s.region = @region AND s.areas && @areas::text[]
+                WHERE s.game_slug = @game AND s.mode = @mode AND s.region = @region AND s.areas && @areas::text[]
                   AND s.user_id <> @newUserId
                   AND {LfgSwipeSql.Active("s")}
-                """, new { game, region, areas, newUserId })).ToList();
+                """, new { game, mode, region, areas, newUserId })).ToList();
             foreach (var peerId in peers)
             {
                 await hub.Clients.Group(NotificationHub.UserGroup(peerId.ToString()))
                     .SendAsync(NotificationHubEvents.SquadUpPoolUpdated);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Non-critical: peers will get the new card on their next 15-second empty-deck poll.
+            logger.LogWarning(ex, "SquadUpPoolUpdated push failed for session {UserId}; peers will see the new card on their next deck refill.", newUserId);
         }
     }
 }
