@@ -59,7 +59,7 @@ public static class ScrimAdminEndpoints
         using var conn = db.CreateConnection();
 
         var totalCount = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM public.scrim_disputes WHERE status = @statusFilter",
+            "SELECT COUNT(*) FROM public.scrim_disputes WHERE status = @statusFilter::scrim_dispute_status",
             new { statusFilter });
 
         var rows = await conn.QueryAsync<ScrimDisputeAdminRow>(
@@ -76,7 +76,7 @@ public static class ScrimAdminEndpoints
             JOIN public.teams rt ON rt.id = sd.raised_by_team_id
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
-            WHERE sd.status = @statusFilter
+            WHERE sd.status = @statusFilter::scrim_dispute_status
             ORDER BY sd.created_at DESC
             LIMIT @actualSize OFFSET @offset
             """,
