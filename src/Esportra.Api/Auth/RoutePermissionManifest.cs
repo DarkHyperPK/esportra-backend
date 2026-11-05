@@ -35,6 +35,9 @@ public static class RoutePermissionManifest
         P("GET",  "/api/partners/public"),
         P("GET",  "/api/sponsors/active"),
 
+        // Public Squad Up page: live counters only (no player data)
+        P("GET",  "/api/competitive/lfg/swipe/public-stats"),
+
         // Public sponsor placement reads
         P("GET",  "/api/placements/global"),
         P("GET",  "/api/tournaments/{id}/sponsors"),

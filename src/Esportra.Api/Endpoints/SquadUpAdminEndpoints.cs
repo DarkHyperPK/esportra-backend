@@ -28,6 +28,8 @@ public static class SquadUpAdminEndpoints
         app.MapGet("/api/admin/squad-up/sessions", SessionsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/admin/squad-up/matches", MatchesAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/admin/squad-up/sessions/{userId:guid}/end", EndSessionAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/admin/squad-up/lobbies", LobbiesAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/admin/squad-up/lobbies/{id:guid}/close", CloseLobbyAsync).RequireAuthorization("Authenticated");
     }
 
     private static bool Allowed(HttpContext ctx, string permission) =>
@@ -50,7 +52,8 @@ public static class SquadUpAdminEndpoints
         var series = (await conn.QueryAsync<SquadUpDayRow>(
             """
             SELECT to_char(day, 'YYYY-MM-DD') AS day, COALESCE(sum(sessions_started), 0)::int AS sessions_started, COALESCE(sum(swipes_right), 0)::int AS swipes_right,
-                   COALESCE(sum(swipes_left), 0)::int AS swipes_left, COALESCE(sum(matches), 0)::int AS matches
+                   COALESCE(sum(swipes_left), 0)::int AS swipes_left, COALESCE(sum(matches), 0)::int AS matches,
+                   COALESCE(sum(lobbies_opened), 0)::int AS lobbies_opened, COALESCE(sum(lobbies_filled), 0)::int AS lobbies_filled
             FROM public.squad_up_daily_stats
             WHERE day >= (now() AT TIME ZONE 'utc')::date - (@range - 1)
             GROUP BY day ORDER BY day
@@ -69,12 +72,19 @@ public static class SquadUpAdminEndpoints
             SELECT reason, count(*)::int AS count FROM public.squad_up_reports
             WHERE created_at >= now() - make_interval(days => @range) GROUP BY reason ORDER BY count DESC
             """, new { range });
+        var pool = await conn.QuerySingleAsync<SquadUpPoolRow>(
+            $"""
+            SELECT count(*) FILTER (WHERE s.mode = 'competitive')::int AS competitive,
+                   count(*) FILTER (WHERE s.mode = 'unrated')::int AS unrated,
+                   (SELECT count(*) FROM public.squad_up_lobbies l WHERE {SquadUpLobbySql.Open("l")})::int AS open_lobbies
+            FROM public.lfg_swipe_sessions s WHERE {LfgSwipeSql.Active("s")}
+            """);
         var rights = series.Sum(d => d.SwipesRight);
         var matches = series.Sum(d => d.Matches);
         return Results.Ok(new
         {
             flag = flag is null ? null : new { id = flag.Id, enabled = flag.IsEnabled },
-            live = new { activePlayers = live.Sum(r => r.Players), byRegion = live },
+            live = new { activePlayers = live.Sum(r => r.Players), byRegion = live, pool.Competitive, pool.Unrated, pool.OpenLobbies },
             totals = new
             {
                 days = range,
@@ -83,6 +93,8 @@ public static class SquadUpAdminEndpoints
                 swipesLeft = series.Sum(d => d.SwipesLeft),
                 matches,
                 matchRate = rights == 0 ? 0m : Math.Round(100m * matches / rights, 1),
+                lobbiesOpened = series.Sum(d => d.LobbiesOpened),
+                lobbiesFilled = series.Sum(d => d.LobbiesFilled),
             },
             series,
             reports = new { reports.Open, reports.Last7Days, reports.AvgResolutionHours, byReason },
@@ -98,6 +110,7 @@ public static class SquadUpAdminEndpoints
         var rows = await conn.QueryAsync<SquadUpSessionRow>(
             $"""
             SELECT s.user_id, p.username, s.region, s.competitive_tier, s.mic_on, s.slots_needed, s.started_at, s.last_heartbeat,
+                   s.mode, s.country_code,
                    (SELECT count(*) FROM public.lfg_swipe_actions a WHERE a.session_id = s.id AND a.direction = 'like')::int AS likes_sent,
                    (SELECT count(*) FROM public.lfg_swipe_actions a WHERE a.session_id = s.id AND a.direction = 'pass')::int AS passes_sent
             FROM public.lfg_swipe_sessions s
@@ -125,6 +138,36 @@ public static class SquadUpAdminEndpoints
             ORDER BY m.matched_at DESC LIMIT @limit
             """, new { limit = Math.Clamp(limit ?? 50, 1, 200) });
         return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> LobbiesAsync(HttpContext ctx, IDbConnectionFactory db)
+    {
+        if (ctx.Items["UserContext"] is null) return Results.Unauthorized();
+        if (!Allowed(ctx, SquadUpPermissions.View)) return Results.Forbid();
+        using var conn = db.CreateConnection();
+        var rows = await conn.QueryAsync<SquadUpAdminLobbyRow>(
+            $"""
+            SELECT l.id, l.host_id, p.username AS host_username, l.title, l.mode, l.region, l.country_code, l.open_slots, l.status, l.created_at,
+                   (SELECT count(*) FROM public.squad_up_lobby_members m WHERE m.lobby_id = l.id AND m.status = 'accepted')::int AS accepted_count,
+                   (SELECT count(*) FROM public.squad_up_lobby_members m WHERE m.lobby_id = l.id AND m.status = 'requested')::int AS pending_count
+            FROM public.squad_up_lobbies l JOIN public.profiles p ON p.id = l.host_id
+            WHERE {SquadUpLobbySql.Open("l")} OR (l.status = 'full' AND l.created_at > now() - interval '6 hours')
+            ORDER BY l.created_at DESC LIMIT 200
+            """);
+        return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> CloseLobbyAsync(Guid id, HttpContext ctx, IDbConnectionFactory db,
+        Microsoft.AspNetCore.SignalR.IHubContext<Esportra.Api.Hubs.NotificationHub> hub)
+    {
+        if (ctx.Items["UserContext"] is null) return Results.Unauthorized();
+        if (!Allowed(ctx, SquadUpPermissions.Manage)) return Results.Forbid();
+        using var conn = db.CreateConnection();
+        var closed = await conn.ExecuteAsync(
+            "UPDATE public.squad_up_lobbies SET status = 'closed', closed_at = now() WHERE id = @id AND status IN ('open', 'full')", new { id });
+        if (closed == 0) return Results.NotFound();
+        await SquadUpLobbyMembership.PushUpdatedAsync(conn, hub, id);
+        return Results.NoContent();
     }
 
     private static async Task<IResult> EndSessionAsync(Guid userId, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
@@ -158,8 +201,33 @@ public sealed record SquadUpRegionRow
     public int AvgTier { get; init; }
 }
 
+public sealed record SquadUpPoolRow
+{
+    public int Competitive { get; init; }
+    public int Unrated { get; init; }
+    public int OpenLobbies { get; init; }
+}
+
+public sealed record SquadUpAdminLobbyRow
+{
+    public Guid Id { get; init; }
+    public Guid HostId { get; init; }
+    public string? HostUsername { get; init; }
+    public string Title { get; init; } = "";
+    public string Mode { get; init; } = "";
+    public string Region { get; init; } = "";
+    public string CountryCode { get; init; } = "";
+    public int OpenSlots { get; init; }
+    public int AcceptedCount { get; init; }
+    public int PendingCount { get; init; }
+    public string Status { get; init; } = "";
+    public DateTime CreatedAt { get; init; }
+}
+
 public sealed record SquadUpDayRow
 {
+    public int LobbiesOpened { get; init; }
+    public int LobbiesFilled { get; init; }
     public string Day { get; init; } = "";
     public int SessionsStarted { get; init; }
     public int SwipesRight { get; init; }
@@ -178,7 +246,9 @@ public sealed record SquadUpSessionRow
     public Guid UserId { get; init; }
     public string? Username { get; init; }
     public string Region { get; init; } = "";
-    public int CompetitiveTier { get; init; }
+    public string Mode { get; init; } = "";
+    public string? CountryCode { get; init; }
+    public int? CompetitiveTier { get; init; }
     public bool MicOn { get; init; }
     public int SlotsNeeded { get; init; }
     public DateTime StartedAt { get; init; }

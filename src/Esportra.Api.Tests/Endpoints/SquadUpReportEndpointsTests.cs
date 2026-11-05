@@ -75,6 +75,8 @@ public sealed class SquadUpReportEndpointsTests(ApiFactory factory) : IAsyncLife
     {
         var id = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(id);
+        await using (var countryConn = factory.Seeder.OpenConnection())
+            await countryConn.ExecuteAsync("UPDATE public.profiles SET country_code = 'PK' WHERE id = @id", new { id });
         await Exec(
             """
             INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line, region) VALUES (@id, @puuid, 'P', 'T', @region);

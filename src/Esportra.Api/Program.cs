@@ -753,6 +753,8 @@ app.MapLfgSwipeEndpoints();
 app.MapSquadUpAdminEndpoints();
 app.MapSquadUpReportEndpoints();
 app.MapSquadUpReportAdminEndpoints();
+app.MapSquadUpLobbyEndpoints();
+app.MapSquadUpPublicEndpoints();
 app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
 app.MapScrimEndpoints();

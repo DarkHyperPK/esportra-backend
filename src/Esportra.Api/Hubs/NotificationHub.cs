@@ -81,6 +81,9 @@ public static class NotificationHubEvents
     /// <summary>Someone liked this user in Squad Up; payload is the unseen-likes count only.</summary>
     public const string SquadUpLike = "SquadUpLike";
 
+    /// <summary>A Squad Up lobby the user hosts or belongs to changed (request, accept, leave, close); payload { lobbyId }.</summary>
+    public const string SquadUpLobbyUpdated = "SquadUpLobbyUpdated";
+
     /// <summary>A specific notification was marked as read (from another tab).</summary>
     public const string NotificationRead = "NotificationRead";
 

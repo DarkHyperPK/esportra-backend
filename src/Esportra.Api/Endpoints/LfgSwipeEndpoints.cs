@@ -14,7 +14,8 @@ namespace Esportra.Api.Endpoints;
 /// Squad Up — live swipe matching (Valorant).
 /// POST   /api/competitive/lfg/swipe/session             — start a Squad Up session
 /// DELETE /api/competitive/lfg/swipe/session             — end the session (returns session stats)
-/// POST   /api/competitive/lfg/swipe/session/heartbeat   — keep presence alive
+/// POST   /api/competitive/lfg/swipe/session/heartbeat   — keep presence alive (tab open)
+/// POST   /api/competitive/lfg/swipe/session/active      — "Still looking?" (player is active)
 /// GET    /api/competitive/lfg/swipe/session/stats       — swipes / matches / duration
 /// GET    /api/competitive/lfg/swipe/cards               — next cards
 /// GET    /api/competitive/lfg/swipe/pending-likes       — unseen likes
@@ -29,6 +30,7 @@ public static class LfgSwipeEndpoints
         app.MapPost("/api/competitive/lfg/swipe/session", StartSessionAsync).RequireAuthorization("Authenticated");
         app.MapDelete("/api/competitive/lfg/swipe/session", EndSessionAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/swipe/session/heartbeat", HeartbeatAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/competitive/lfg/swipe/session/active", StillHereAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/swipe/session/stats", GetStatsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/swipe/cards", GetCardsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/swipe/pending-likes", PendingLikesAsync).RequireAuthorization("Authenticated");
@@ -49,23 +51,11 @@ public static class LfgSwipeEndpoints
             return Results.BadRequest(new { error = "slots_needed must be between 1 and 4." });
 
         using var conn = db.CreateConnection();
-        var profile = await conn.QuerySingleOrDefaultAsync<(bool Linked, int? Tier, string? Region)>(
-            """
-            SELECT EXISTS (SELECT 1 FROM public.riot_accounts WHERE user_id = @userId) AS linked,
-                   (SELECT pgs.competitive_tier FROM public.player_game_stats pgs
-                    WHERE pgs.user_id = @userId AND pgs.game_slug = 'valorant'
-                      AND EXISTS (SELECT 1 FROM public.riot_accounts l WHERE l.user_id = pgs.user_id AND l.puuid = pgs.provider_player_id)) AS tier,
-                   (SELECT lower(region) FROM public.riot_accounts WHERE user_id = @userId) AS region
-            """, new { userId });
-        if (!profile.Linked) return Results.UnprocessableEntity(new { error = "RIOT_NOT_LINKED" });
-        if (profile.Tier is null) return Results.UnprocessableEntity(new { error = "NOT_RANKED" });
-        if (string.IsNullOrWhiteSpace(profile.Region)) return Results.UnprocessableEntity(new { error = "REGION_UNKNOWN" });
-
-        var restrictions = (await conn.QueryAsync<DateTime?>(
-            "SELECT until FROM public.squad_up_restrictions WHERE user_id = @userId AND lifted_at IS NULL AND (until IS NULL OR until > now()) ORDER BY until DESC NULLS FIRST",
-            new { userId })).ToList();
-        if (restrictions.Count > 0)
-            return Results.Json(new { error = "SQUAD_UP_RESTRICTED", until = restrictions[0] }, statusCode: StatusCodes.Status403Forbidden);
+        var player = await SquadUpEligibility.LoadAsync(conn, userId);
+        var (filters, filterError) = SquadUpEligibility.Normalise(req.Preferences, player.Country);
+        if (filters is null) return Results.BadRequest(new { error = filterError });
+        var refused = await SquadUpEligibility.CheckAsync(conn, userId, player, filters);
+        if (refused is not null) return refused;
 
         if (conn.State != ConnectionState.Open) conn.Open();
         using var tx = conn.BeginTransaction();
@@ -73,23 +63,62 @@ public static class LfgSwipeEndpoints
             new { key = $"lfg-swipe-session:{userId}" }, tx);
         // A stale or ended session must not carry old likes into the new one (actions cascade).
         await conn.ExecuteAsync(
-            $"DELETE FROM public.lfg_swipe_sessions WHERE user_id = @userId AND game_slug = 'valorant' AND NOT {LfgSwipeSql.Active("lfg_swipe_sessions")}",
-            new { userId }, tx);
+            $"DELETE FROM public.lfg_swipe_sessions WHERE user_id = @userId AND game_slug = @game AND NOT {LfgSwipeSql.Active("lfg_swipe_sessions")}",
+            new { userId, game = filters.Game }, tx);
         var alreadyLive = await conn.ExecuteScalarAsync<bool>(
-            $"SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_sessions s WHERE s.user_id = @userId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")})",
-            new { userId }, tx);
+            $"SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_sessions s WHERE s.user_id = @userId AND s.game_slug = @game AND {LfgSwipeSql.Active("s")})",
+            new { userId, game = filters.Game }, tx);
         var session = await conn.QuerySingleAsync<LfgSwipeSessionDto>(
             """
-            INSERT INTO public.lfg_swipe_sessions (user_id, game_slug, region, competitive_tier, mic_on, slots_needed)
-            VALUES (@userId, 'valorant', @region, @tier, @micOn, @slots)
+            INSERT INTO public.lfg_swipe_sessions
+                (user_id, game_slug, region, competitive_tier, mic_on, slots_needed, mode, country_code, wanted_countries, min_tier, max_tier)
+            VALUES (@userId, @game, @region, @tier, @micOn, @slots, @mode, @country, @countries, @minTier, @maxTier)
             ON CONFLICT (user_id, game_slug) DO UPDATE SET
                 mic_on = EXCLUDED.mic_on, slots_needed = EXCLUDED.slots_needed,
-                competitive_tier = EXCLUDED.competitive_tier, region = EXCLUDED.region, last_heartbeat = now()
-            RETURNING id, game_slug, region, competitive_tier, mic_on, slots_needed, started_at, last_heartbeat
-            """, new { userId, region = profile.Region, tier = profile.Tier, micOn = req.MicOn, slots = req.SlotsNeeded }, tx);
+                competitive_tier = EXCLUDED.competitive_tier, region = EXCLUDED.region, mode = EXCLUDED.mode,
+                country_code = EXCLUDED.country_code, wanted_countries = EXCLUDED.wanted_countries,
+                min_tier = EXCLUDED.min_tier, max_tier = EXCLUDED.max_tier,
+                last_heartbeat = now(), last_activity_at = now()
+            RETURNING id, game_slug, region, competitive_tier, mic_on, slots_needed, started_at, last_heartbeat,
+                      mode, country_code, wanted_countries, min_tier, max_tier
+            """, new
+            {
+                userId,
+                game = filters.Game,
+                region = player.Region,
+                tier = player.Tier,
+                micOn = req.MicOn,
+                slots = req.SlotsNeeded,
+                mode = filters.Mode,
+                country = player.Country,
+                countries = filters.WantedCountries,
+                minTier = filters.MinTier,
+                maxTier = filters.MaxTier,
+            }, tx);
         if (!alreadyLive) await SquadUpStats.BumpAsync(conn, session.Region, SquadUpCounter.SessionsStarted, tx);
         tx.Commit();
         return Results.Ok(session);
+    }
+
+    /// <summary>"Still looking?" — the player is here. Keeps an idle-but-open tab in the pool for another 10 minutes.</summary>
+    private static async Task<IResult> StillHereAsync(HttpContext ctx, IDbConnectionFactory db)
+    {
+        if (CallerId(ctx) is not { } myId) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var touched = await TouchActivityAsync(conn, myId);
+        return touched ? Results.NoContent() : Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
+    }
+
+    /// <summary>Records that the player did something. Heartbeats do not count, so an idle tab drops out.</summary>
+    internal static async Task<bool> TouchActivityAsync(IDbConnection conn, Guid myId)
+    {
+        var session = await conn.ExecuteAsync(
+            $"UPDATE public.lfg_swipe_sessions SET last_activity_at = now() WHERE user_id = @myId AND game_slug = 'valorant' AND {LfgSwipeSql.Active("lfg_swipe_sessions")}",
+            new { myId });
+        var lobby = await conn.ExecuteAsync(
+            $"UPDATE public.squad_up_lobbies l SET last_activity_at = now() WHERE l.host_id = @myId AND {SquadUpLobbySql.Open("l")}",
+            new { myId });
+        return session + lobby > 0;
     }
 
     // ── DELETE session / heartbeat / stats ───────────────────────────────────
@@ -107,6 +136,10 @@ public static class LfgSwipeEndpoints
         return stats is null ? Results.NoContent() : Results.Ok(stats);
     }
 
+    /// <summary>
+    /// Keeps the player's presence alive while the tab is open: their Duo session and the lobby they host.
+    /// 404 when neither is live, which is how the page learns the player dropped out.
+    /// </summary>
     private static async Task<IResult> HeartbeatAsync(HttpContext ctx, IDbConnectionFactory db)
     {
         if (CallerId(ctx) is not { } myId) return Results.Unauthorized();
@@ -117,8 +150,12 @@ public static class LfgSwipeEndpoints
             WHERE user_id = @myId AND game_slug = 'valorant' AND {LfgSwipeSql.Active("lfg_swipe_sessions")}
             RETURNING id
             """, new { myId });
-        if (sessionId is null) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
-        return Results.Ok(new { pendingLikes = await CountPendingLikesAsync(conn, myId, sessionId.Value) });
+        var hostingLobby = await conn.ExecuteAsync(
+            $"UPDATE public.squad_up_lobbies l SET last_heartbeat = now() WHERE l.host_id = @myId AND {SquadUpLobbySql.Open("l")}",
+            new { myId }) > 0;
+        if (sessionId is null && !hostingLobby) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
+        var pendingLikes = sessionId is null ? 0 : await CountPendingLikesAsync(conn, myId, sessionId.Value);
+        return Results.Ok(new { pendingLikes, inSession = sessionId is not null, hostingLobby });
     }
 
     private static async Task<IResult> GetStatsAsync(HttpContext ctx, IDbConnectionFactory db)
@@ -132,13 +169,13 @@ public static class LfgSwipeEndpoints
     // ── GET cards / pending-likes / matches ──────────────────────────────────
 
     private static async Task<IResult> GetCardsAsync(
-        HttpContext ctx, IDbConnectionFactory db, [FromQuery] int? limit, [FromQuery(Name = "tier_range")] int? tierRange)
+        HttpContext ctx, IDbConnectionFactory db, [FromQuery] int? limit)
     {
         if (CallerId(ctx) is not { } myId) return Results.Unauthorized();
         using var conn = db.CreateConnection();
         if (!await HasActiveSessionAsync(conn, myId)) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
         var cards = await conn.QueryAsync<LfgSwipeCardDto>(LfgSwipeSql.Cards(),
-            new { myId, limit = Math.Clamp(limit ?? 5, 1, 10), tierRange = Math.Clamp(tierRange ?? 4, 1, 8) });
+            new { myId, limit = Math.Clamp(limit ?? 5, 1, 10) });
         return Results.Ok(cards);
     }
 
@@ -175,6 +212,7 @@ public static class LfgSwipeEndpoints
             new { myId });
         if (session is not { } current) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
         var sessionId = current.Id;
+        await TouchActivityAsync(conn, myId);
         // Selecting from profiles means an unknown id is a no-op rather than an FK error.
         var recorded = await conn.ExecuteAsync(
             """
@@ -196,6 +234,7 @@ public static class LfgSwipeEndpoints
             $"SELECT id FROM public.lfg_swipe_sessions s WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")}",
             new { myId });
         if (caller is null) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
+        await TouchActivityAsync(conn, myId);
         var outcome = await LfgSwipeMatchmaker.SwipeRightAsync(conn, myId, targetUserId);
         if (outcome is null) return Results.NotFound(new { error = "TARGET_NOT_ACTIVE" });
         await LfgSwipeMatchmaker.PushAsync(notifHub, outcome.Pushes);
@@ -211,4 +250,13 @@ public static class LfgSwipeEndpoints
 
 public sealed record StartSwipeSessionRequest(
     [property: JsonPropertyName("mic_on")] bool MicOn,
-    [property: JsonPropertyName("slots_needed")] int SlotsNeeded);
+    [property: JsonPropertyName("slots_needed")] int SlotsNeeded,
+    [property: JsonPropertyName("game")] string? Game = null,
+    [property: JsonPropertyName("mode")] string? Mode = null,
+    [property: JsonPropertyName("wanted_countries")] string[]? WantedCountries = null,
+    [property: JsonPropertyName("min_tier")] int? MinTier = null,
+    [property: JsonPropertyName("max_tier")] int? MaxTier = null)
+{
+    [JsonIgnore]
+    public SquadUpPreferences Preferences => new(Game, Mode, WantedCountries, MinTier, MaxTier);
+}

@@ -3,7 +3,7 @@ using Esportra.Api.ScoreboardOcr;
 namespace Esportra.Api.Endpoints;
 
 internal sealed record ReportDraft(
-    Guid ReportedId, string Reason, string Details, string? ProofLink, Guid? MatchId, string Context, bool Hide);
+    Guid ReportedId, string Reason, string Details, string? ProofLink, Guid? MatchId, string Context, bool Hide, Guid? LobbyId = null);
 
 internal sealed record ReportImage(byte[] Data, string Extension, string ContentType);
 
@@ -33,9 +33,10 @@ internal static class SquadUpReportRules
         var link = form["proof_link"].ToString().Trim();
         if (link.Length > 0 && !IsHttpsLink(link)) return (null, "INVALID_PROOF_LINK");
         Guid? matchId = Guid.TryParse(form["match_id"], out var parsedMatch) ? parsedMatch : null;
-        var context = matchId is null ? "card" : "match";
+        Guid? lobbyId = Guid.TryParse(form["lobby_id"], out var parsedLobby) ? parsedLobby : null;
+        var context = lobbyId is not null ? "lobby" : matchId is null ? "card" : "match";
         var hide = bool.TryParse(form["hide_player"], out var hideValue) && hideValue;
-        return (new ReportDraft(reportedId, reason, details, link.Length == 0 ? null : link, matchId, context, hide), null);
+        return (new ReportDraft(reportedId, reason, details, link.Length == 0 ? null : link, matchId, context, hide, lobbyId), null);
     }
 
     public static bool IsHttpsLink(string link) =>

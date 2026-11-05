@@ -26,6 +26,8 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
     {
         var id = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(id);
+        await using (var countryConn = factory.Seeder.OpenConnection())
+            await countryConn.ExecuteAsync("UPDATE public.profiles SET country_code = 'PK' WHERE id = @id", new { id });
         await using (var conn = factory.Seeder.OpenConnection())
         {
             await conn.ExecuteAsync(

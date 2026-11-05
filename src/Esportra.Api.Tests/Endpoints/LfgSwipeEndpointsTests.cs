@@ -32,6 +32,8 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
         region = region == OwnRegion ? this.region : region;
         var id = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(id);
+        await using (var countryConn = factory.Seeder.OpenConnection())
+            await countryConn.ExecuteAsync("UPDATE public.profiles SET country_code = 'PK' WHERE id = @id", new { id });
         if (linked)
         {
             await using var conn = factory.Seeder.OpenConnection();

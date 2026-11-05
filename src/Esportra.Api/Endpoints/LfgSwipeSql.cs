@@ -5,9 +5,33 @@ internal static class LfgSwipeSql
 {
     public const string GameSlug = "valorant";
 
-    /// <summary>A session is live while it has not ended and its client has heartbeated recently.</summary>
+    /// <summary>Default rank band (tiers either side) when a Competitive player sets no range.</summary>
+    public const int DefaultTierBand = 4;
+
+    /// <summary>
+    /// A session is live while it has not ended, its tab has heartbeated in the last 3 minutes,
+    /// and the player has done something (swipe, start, "Still looking?") in the last 10 minutes.
+    /// </summary>
     public static string Active(string alias) =>
-        $"({alias}.ended_at IS NULL AND {alias}.last_heartbeat > now() - interval '3 minutes')";
+        $"({alias}.ended_at IS NULL AND {alias}.last_heartbeat > now() - interval '3 minutes' AND {alias}.last_activity_at > now() - interval '10 minutes')";
+
+    /// <summary>
+    /// "a would accept b". Both aliases expose game_slug, mode, region (Riot shard), country_code, wanted_countries,
+    /// competitive_tier, min_tier and max_tier (sessions, lobbies, or a built "me" row).
+    /// Same game, mode and shard (players on different shards cannot party); b's country is one a wants;
+    /// for Competitive, b's tier sits in a's range (default ±4 tiers around a's own tier).
+    /// </summary>
+    public static string Accepts(string a, string b) =>
+        $"""
+        ({a}.game_slug = {b}.game_slug AND {a}.mode = {b}.mode AND {a}.region = {b}.region
+         AND {b}.country_code = ANY({a}.wanted_countries)
+         AND ({a}.mode <> 'competitive'
+              OR {b}.competitive_tier BETWEEN COALESCE({a}.min_tier, {a}.competitive_tier - {DefaultTierBand})
+                                          AND COALESCE({a}.max_tier, {a}.competitive_tier + {DefaultTierBand})))
+        """;
+
+    /// <summary>Both players would accept each other. Used by Duo cards, likes and matching.</summary>
+    public static string Compatible(string a, string b) => $"({Accepts(a, b)} AND {Accepts(b, a)})";
 
     /// <summary>True when neither player has hidden the other (a report with "hide" creates the block).</summary>
     public static string NotBlocked(string a, string b) =>
@@ -59,8 +83,7 @@ internal static class LfgSwipeSql
         SELECT 1
         FROM public.lfg_swipe_sessions me
         JOIN public.lfg_swipe_sessions ts
-          ON ts.game_slug = me.game_slug AND ts.user_id = @targetId AND ts.region = me.region
-         AND ABS(ts.competitive_tier - me.competitive_tier) <= 8 AND {Active("ts")}
+          ON ts.user_id = @targetId AND {Compatible("me", "ts")} AND {Active("ts")}
         JOIN public.profiles p ON p.id = ts.user_id AND COALESCE(p.is_suspended, false) = false
         WHERE me.user_id = @myId AND me.game_slug = 'valorant' AND {Active("me")}
           AND {NotBlocked("me.user_id", "ts.user_id")}
@@ -71,6 +94,7 @@ internal static class LfgSwipeSql
         $"""
         SELECT count(*)::int FROM public.lfg_swipe_actions a
         JOIN public.lfg_swipe_sessions s ON s.id = a.session_id AND {Active("s")}
+        JOIN public.lfg_swipe_sessions mine_s ON mine_s.id = @mySession AND {Compatible("mine_s", "s")}
         WHERE a.direction = 'like' AND a.target_user_id = @myId
           AND {NotBlocked("@myId", "s.user_id")}
           AND NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mine
@@ -81,13 +105,14 @@ internal static class LfgSwipeSql
         $"""
         WITH {ActiveVersionCte},
         me AS (
-            SELECT s.id, s.region, s.competitive_tier,
+            SELECT s.id, s.game_slug, s.mode, s.region, s.country_code, s.wanted_countries,
+                   s.competitive_tier, s.min_tier, s.max_tier,
                    {TopRoles("mypgs")} AS roles
             FROM public.lfg_swipe_sessions s
             LEFT JOIN public.player_game_stats mypgs ON mypgs.user_id = s.user_id AND mypgs.game_slug = s.game_slug
             WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {Active("s")}
         )
-        SELECT s.user_id, s.mic_on, s.slots_needed,
+        SELECT s.user_id, s.mic_on, s.slots_needed, s.mode, s.country_code,
                p.username, p.avatar_seed, p.avatar_url, p.avatar_style,
                pgs.competitive_tier, pgs.competitive_tier_name, rt.icon_url AS competitive_tier_icon_url,
                pgs.win_rate, pgs.kd_ratio, {HsPct} AS hs_pct, COALESCE(pgs.matches_analyzed, 0) AS matches_analyzed,
@@ -99,11 +124,11 @@ internal static class LfgSwipeSql
                        WHERE liked.session_id = s.id AND liked.target_user_id = @myId AND liked.direction = 'like') AS liked_you
         FROM me
         JOIN public.lfg_swipe_sessions s
-          ON s.game_slug = 'valorant' AND s.user_id <> @myId AND s.region = me.region
-         AND ABS(s.competitive_tier - me.competitive_tier) <= @tierRange AND {Active("s")}
+          ON s.user_id <> @myId AND {Compatible("me", "s")} AND {Active("s")}
         JOIN public.profiles p ON p.id = s.user_id AND COALESCE(p.is_suspended, false) = false
-        JOIN public.player_game_stats pgs ON pgs.user_id = s.user_id AND pgs.game_slug = s.game_slug AND {VerifiedStatsLink}
         JOIN public.riot_accounts ra ON ra.user_id = s.user_id
+        -- Unrated players may have no synced stats yet; they still get a card.
+        LEFT JOIN public.player_game_stats pgs ON pgs.user_id = s.user_id AND pgs.game_slug = s.game_slug AND {VerifiedStatsLink}
         LEFT JOIN public.game_catalog_rank_tiers rt
           ON rt.game_slug = s.game_slug AND rt.sort_order = pgs.competitive_tier - 3
          AND rt.version_id = (SELECT id FROM active_v)

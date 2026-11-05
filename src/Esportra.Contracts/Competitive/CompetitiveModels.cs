@@ -451,7 +451,12 @@ public sealed record LfgSwipeSessionDto
     public Guid Id { get; init; }
     public string GameSlug { get; init; } = "";
     public string Region { get; init; } = "";
-    public int CompetitiveTier { get; init; }
+    public int? CompetitiveTier { get; init; }
+    public string Mode { get; init; } = "competitive";
+    public string? CountryCode { get; init; }
+    public string[] WantedCountries { get; init; } = [];
+    public int? MinTier { get; init; }
+    public int? MaxTier { get; init; }
     public bool MicOn { get; init; }
     public int SlotsNeeded { get; init; }
     public DateTime StartedAt { get; init; }
@@ -465,9 +470,11 @@ public sealed record LfgSwipeCardDto
     public string? AvatarSeed { get; init; }
     public string? AvatarUrl { get; init; }
     public string? AvatarStyle { get; init; }
-    public int CompetitiveTier { get; init; }
+    public int? CompetitiveTier { get; init; }
     public string? CompetitiveTierName { get; init; }
     public string? CompetitiveTierIconUrl { get; init; }
+    public string Mode { get; init; } = "competitive";
+    public string? CountryCode { get; init; }
     public decimal? WinRate { get; init; }
     public decimal? KdRatio { get; init; }
     public decimal? HsPct { get; init; }

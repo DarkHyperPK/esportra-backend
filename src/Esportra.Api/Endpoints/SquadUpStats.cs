@@ -3,7 +3,7 @@ using Dapper;
 
 namespace Esportra.Api.Endpoints;
 
-internal enum SquadUpCounter { SessionsStarted, SwipesRight, SwipesLeft, Matches }
+internal enum SquadUpCounter { SessionsStarted, SwipesRight, SwipesLeft, Matches, LobbiesOpened, LobbiesFilled }
 
 /// <summary>Durable per-day, per-region counters that back the Admin Centre (live rows are ephemeral).</summary>
 internal static class SquadUpStats
@@ -15,6 +15,8 @@ internal static class SquadUpStats
         SquadUpCounter.SwipesRight => "swipes_right",
         SquadUpCounter.SwipesLeft => "swipes_left",
         SquadUpCounter.Matches => "matches",
+        SquadUpCounter.LobbiesOpened => "lobbies_opened",
+        SquadUpCounter.LobbiesFilled => "lobbies_filled",
         _ => throw new ArgumentOutOfRangeException(nameof(counter)),
     };
 

@@ -9,7 +9,7 @@ namespace Esportra.Api.Endpoints;
 /// <summary>Moderation notifications for Squad Up reports. Wording never names the reporter.</summary>
 internal static class SquadUpModeration
 {
-    private const string Link = "/competitive/lfg/squad-up";
+    private const string Link = "/competitive/squad-up";
 
     private static readonly Dictionary<string, string> ReasonLabels = new()
     {
@@ -41,8 +41,9 @@ internal static class SquadUpModeration
             $"You can't use Squad Up {(until is null ? "permanently" : $"until {until:yyyy-MM-dd HH:mm} UTC")} because of a report about {ReasonLabel(reason)}.",
             new { report_id = reportId, until });
 
-    private static async Task<SwipePush> InsertAsync(
-        IDbConnection conn, IDbTransaction tx, Guid userId, string type, string title, string message, object data)
+    /// <summary>Inserts a notification row and returns the matching real-time payload (pushed after commit).</summary>
+    internal static async Task<SwipePush> InsertAsync(
+        IDbConnection conn, IDbTransaction tx, Guid userId, string type, string title, string message, object data, string link = Link)
     {
         var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
         var id = await conn.QuerySingleAsync<Guid>(
@@ -50,8 +51,8 @@ internal static class SquadUpModeration
             INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
             VALUES (@userId, @type::notification_type, @title, @message, @link, @json::jsonb, FALSE)
             RETURNING id
-            """, new { userId, type, title, message, link = Link, json }, tx);
-        return new SwipePush(userId, new { id, type, title, message, link = Link, data = JsonSerializer.Deserialize<JsonElement>(json) });
+            """, new { userId, type, title, message, link, json }, tx);
+        return new SwipePush(userId, new { id, type, title, message, link, data = JsonSerializer.Deserialize<JsonElement>(json) });
     }
 
     public static Task PushAsync(IHubContext<NotificationHub> hub, IEnumerable<SwipePush> pushes) =>

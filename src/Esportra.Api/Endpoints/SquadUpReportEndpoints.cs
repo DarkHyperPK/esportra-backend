@@ -69,7 +69,8 @@ public static class SquadUpReportEndpoints
             SELECT (EXISTS ({LfgSwipeSql.PoolTarget()})
                     OR EXISTS (SELECT 1 FROM public.lfg_swipe_matches m
                                WHERE m.user1_id = LEAST(@myId, @targetId) AND m.user2_id = GREATEST(@myId, @targetId)
-                                 AND m.matched_at > now() - interval '7 days')) AS connected,
+                                 AND m.matched_at > now() - interval '7 days')
+                    OR EXISTS ({SharedLobbySql})) AS connected,
                    EXISTS (SELECT 1 FROM public.squad_up_reports r
                            WHERE r.reporter_id = @myId AND r.reported_id = @targetId AND r.created_at > now() - interval '24 hours') AS duplicate,
                    (SELECT count(*) FROM public.squad_up_reports r
@@ -80,6 +81,15 @@ public static class SquadUpReportEndpoints
         if (gate.Recent >= SquadUpReportRules.HourlyLimit) return Results.Json(new { error = "TOO_MANY_REPORTS" }, statusCode: StatusCodes.Status429TooManyRequests);
         return null;
     }
+
+    /// <summary>Both players were in the same lobby (host or member, any request) in the last 7 days. Needs @myId, @targetId.</summary>
+    private const string SharedLobbySql =
+        """
+        SELECT 1 FROM public.squad_up_lobbies sl
+        WHERE sl.created_at > now() - interval '7 days'
+          AND (sl.host_id = @myId OR EXISTS (SELECT 1 FROM public.squad_up_lobby_members a WHERE a.lobby_id = sl.id AND a.user_id = @myId))
+          AND (sl.host_id = @targetId OR EXISTS (SELECT 1 FROM public.squad_up_lobby_members b WHERE b.lobby_id = sl.id AND b.user_id = @targetId))
+        """;
 
     private sealed record StoredImage(string Path, ReportImage Image);
 
@@ -119,11 +129,15 @@ public static class SquadUpReportEndpoints
             SELECT id FROM public.lfg_swipe_matches
             WHERE id = @matchId AND user1_id = LEAST(@myId, @targetId) AND user2_id = GREATEST(@myId, @targetId)
             """, new { matchId = draft.MatchId, myId, targetId = draft.ReportedId }, tx);
+        var lobbyId = draft.LobbyId is null ? null : await conn.QuerySingleOrDefaultAsync<Guid?>(
+            $"SELECT @lobbyId WHERE EXISTS ({SharedLobbySql} AND sl.id = @lobbyId)",
+            new { lobbyId = draft.LobbyId, myId, targetId = draft.ReportedId }, tx);
+        var context = lobbyId is not null ? "lobby" : matchId is not null ? "match" : "card";
         await conn.ExecuteAsync(
             """
-            INSERT INTO public.squad_up_reports (id, reporter_id, reported_id, match_id, context, reason, details, proof_link, snapshot)
-            VALUES (@reportId, @myId, @targetId, @matchId, @context, @reason, @details, @proofLink, @snapshot::jsonb)
-            """, new { reportId, myId, targetId = draft.ReportedId, matchId, context = matchId is null ? "card" : "match", reason = draft.Reason, details = draft.Details, proofLink = draft.ProofLink, snapshot }, tx);
+            INSERT INTO public.squad_up_reports (id, reporter_id, reported_id, match_id, lobby_id, context, reason, details, proof_link, snapshot)
+            VALUES (@reportId, @myId, @targetId, @matchId, @lobbyId, @context, @reason, @details, @proofLink, @snapshot::jsonb)
+            """, new { reportId, myId, targetId = draft.ReportedId, matchId, lobbyId, context, reason = draft.Reason, details = draft.Details, proofLink = draft.ProofLink, snapshot }, tx);
         await conn.ExecuteAsync(
             "INSERT INTO public.squad_up_report_evidence (report_id, storage_path, content_type, size_bytes) VALUES (@reportId, @Path, @ContentType, @Size)",
             stored.Select(s => new { reportId, s.Path, s.Image.ContentType, Size = s.Image.Data.Length }), tx);

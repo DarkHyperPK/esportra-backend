@@ -91,6 +91,9 @@ internal static class SquadUpReportActions
                 new { userId = report.ReportedId, until, reason = report.Reason, reportId, adminId = admin.UserIdGuid }, tx);
             await conn.ExecuteAsync(
                 "DELETE FROM public.lfg_swipe_sessions WHERE user_id = @userId AND game_slug = 'valorant'", new { userId = report.ReportedId }, tx);
+            await conn.ExecuteAsync(
+                "UPDATE public.squad_up_lobbies SET status = 'closed', closed_at = now() WHERE host_id = @userId AND status IN ('open', 'full')",
+                new { userId = report.ReportedId }, tx);
             pushes.Add(await SquadUpModeration.RestrictedAsync(conn, tx, report.ReportedId, reportId, report.Reason, until));
         }
         return pushes;
