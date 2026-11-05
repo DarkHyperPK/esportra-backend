@@ -722,6 +722,75 @@ public static class ProfileEndpoints
                 : Results.Content(statsJson, "application/json");
         });
 
+        // ── GET /api/profiles/{id}/game-stats ────────────────────────────────
+        app.MapGet("/api/profiles/{id}/game-stats", async (
+            Guid id,
+            [Microsoft.AspNetCore.Mvc.FromQuery] string? game,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var gameSlug = game ?? "valorant";
+            var cacheKey = $"profile-game-stats:{id}:{gameSlug}";
+            var json = await cache.GetOrCreateAsync<string?>(
+                cacheKey,
+                async _ =>
+                {
+                    using var conn = db.CreateConnection();
+                    var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT pgs.competitive_tier, pgs.competitive_tier_name,
+                               pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                               CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
+                               pgs.matches_analyzed, pgs.sync_status, pgs.player_card_id,
+                               (CASE WHEN pgs.popular_agents IS NULL THEN NULL
+                                     WHEN jsonb_typeof(pgs.popular_agents) = 'array'
+                                     THEN (SELECT COALESCE(jsonb_agg(
+                                             CASE WHEN item->>'headshot_data_complete' = 'true' THEN item
+                                                  ELSE item - 'hs_pct' END), '[]'::jsonb)
+                                           FROM jsonb_array_elements(pgs.popular_agents) item)
+                                     ELSE '[]'::jsonb END) AS popular_agents,
+                               pgp.rank_tier_key,
+                               grt.display_name AS rank_tier_display_name,
+                               grt.icon_url AS rank_tier_icon_url,
+                               pgp.preferred_roles,
+                               pgp.region_key,
+                               reg.display_name AS region_display_name,
+                               CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true)
+                                    THEN ra.game_name END AS riot_game_name,
+                               CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true)
+                                    THEN ra.tag_line END AS riot_tag_line
+                        FROM public.profiles pr
+                        LEFT JOIN public.player_game_stats pgs
+                            ON pgs.user_id = pr.id AND pgs.game_slug = @gameSlug
+                           AND (@gameSlug <> 'valorant' OR EXISTS (
+                                SELECT 1 FROM public.riot_accounts linked
+                                WHERE linked.user_id = pr.id AND linked.puuid = pgs.provider_player_id))
+                        LEFT JOIN public.player_game_profiles pgp
+                            ON pgp.user_id = pr.id AND pgp.game_slug = @gameSlug
+                        LEFT JOIN public.game_catalog_versions gcv
+                            ON gcv.is_active = TRUE
+                        LEFT JOIN public.game_catalog_rank_tiers grt
+                            ON grt.tier_key = pgp.rank_tier_key AND grt.game_slug = @gameSlug
+                           AND grt.version_id = gcv.id
+                        LEFT JOIN public.game_catalog_regions reg
+                            ON reg.region_key = pgp.region_key AND reg.game_slug = @gameSlug
+                           AND reg.version_id = gcv.id
+                        LEFT JOIN public.riot_accounts ra ON ra.user_id = pr.id
+                        WHERE pr.id = @userId
+                        """,
+                        new { userId = id, gameSlug });
+                    if (row is null) return null;
+                    var dict = ProfileResponseNormalizer.ToDictionary(row);
+                    return JsonSerializer.Serialize(dict);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+                cancellationToken: ct);
+            return json is null
+                ? Results.NotFound()
+                : Results.Content(json, "application/json");
+        });
+
         // ── GET /api/profiles/{id}/tournament-history ─────────────────────────
         app.MapGet("/api/profiles/{id}/tournament-history", async (
             Guid id,
