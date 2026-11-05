@@ -61,6 +61,12 @@ public static class LfgSwipeEndpoints
         if (profile.Tier is null) return Results.UnprocessableEntity(new { error = "NOT_RANKED" });
         if (string.IsNullOrWhiteSpace(profile.Region)) return Results.UnprocessableEntity(new { error = "REGION_UNKNOWN" });
 
+        var restrictions = (await conn.QueryAsync<DateTime?>(
+            "SELECT until FROM public.squad_up_restrictions WHERE user_id = @userId AND lifted_at IS NULL AND (until IS NULL OR until > now()) ORDER BY until DESC NULLS FIRST",
+            new { userId })).ToList();
+        if (restrictions.Count > 0)
+            return Results.Json(new { error = "SQUAD_UP_RESTRICTED", until = restrictions[0] }, statusCode: StatusCodes.Status403Forbidden);
+
         if (conn.State != ConnectionState.Open) conn.Open();
         using var tx = conn.BeginTransaction();
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",

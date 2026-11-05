@@ -620,67 +620,13 @@ public static class AdminEndpoints
             Guid userId,
             [FromBody] SuspendUserRequest req,
             HttpContext ctx,
-            IDbConnectionFactory db,
-            ISupabaseAdminClient supabase,
-            HybridCache cache,
-            AuditService audit,
-            ILogger<Program> logger,
+            UserSuspensionService suspension,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersBan)) return Results.Forbid();
-            using var conn = db.CreateConnection();
-            var targetName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
-            await conn.ExecuteAsync(
-                """
-                UPDATE profiles
-                SET is_suspended = true,
-                    suspension_reason = @reason,
-                    suspension_type = @suspensionType,
-                    suspension_until = @suspensionUntil,
-                    updated_at = NOW()
-                WHERE id = @userId
-                """,
-                new
-                {
-                    userId,
-                    reason = req.Reason,
-                    suspensionType = req.SuspensionType,
-                    suspensionUntil = req.SuspensionUntil,
-                });
-
-            try
-            {
-                await supabase.LogoutUserAsync(userId.ToString(), ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Supabase force-logout failed for suspended user {UserId}", userId);
-            }
-
-            try
-            {
-                await cache.RemoveAsync($"user-ctx:{userId}", ct);
-                await cache.RemoveAsync($"user-suspension:{userId}", ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Cache eviction failed for suspended user {UserId}", userId);
-            }
-
-            await audit.LogFromHttp(
-                ctx, userCtx,
-                ActionType.Suspend, TargetType.User,
-                userId, targetName ?? userId.ToString(),
-                new
-                {
-                    reason = req.Reason,
-                    suspensionType = req.SuspensionType,
-                    suspensionUntil = req.SuspensionUntil,
-                },
-                ct: ct);
+            await suspension.SuspendAsync(ctx, userCtx, userId, req.Reason, req.SuspensionType, req.SuspensionUntil, ct);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 

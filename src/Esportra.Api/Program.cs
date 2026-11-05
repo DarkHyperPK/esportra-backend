@@ -315,6 +315,8 @@ builder.Services.AddSingleton<IEmailService, ResendEmailService>();
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
 builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
+builder.Services.AddScoped<Esportra.Api.Services.UserSuspensionService>();
+builder.Services.AddScoped<Esportra.Api.Services.IReportProofStore, Esportra.Api.Services.ReportProofStore>();
 builder.Services.AddHttpClient<SupabasePublicAuthClient>();
 builder.Services.AddScoped<ISupabasePublicAuthClient, SupabasePublicAuthClient>();
 builder.Services.AddHttpClient<MfaFactorCleanupService>();
@@ -749,6 +751,8 @@ app.MapAvailabilityEndpoints();
 app.MapLfgEndpoints();
 app.MapLfgSwipeEndpoints();
 app.MapSquadUpAdminEndpoints();
+app.MapSquadUpReportEndpoints();
+app.MapSquadUpReportAdminEndpoints();
 app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
 app.MapScrimEndpoints();

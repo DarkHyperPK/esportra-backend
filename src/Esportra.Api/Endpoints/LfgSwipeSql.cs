@@ -9,6 +9,13 @@ internal static class LfgSwipeSql
     public static string Active(string alias) =>
         $"({alias}.ended_at IS NULL AND {alias}.last_heartbeat > now() - interval '3 minutes')";
 
+    /// <summary>True when neither player has hidden the other (a report with "hide" creates the block).</summary>
+    public static string NotBlocked(string a, string b) =>
+        $"""
+        NOT EXISTS (SELECT 1 FROM public.squad_up_blocks blk
+                    WHERE (blk.blocker_id = {a} AND blk.blocked_id = {b}) OR (blk.blocker_id = {b} AND blk.blocked_id = {a}))
+        """;
+
     /// <summary>Same catalog version that LFG discovery uses.</summary>
     public const string ActiveVersionCte =
         "active_v AS (SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1)";
@@ -56,6 +63,7 @@ internal static class LfgSwipeSql
          AND ABS(ts.competitive_tier - me.competitive_tier) <= 8 AND {Active("ts")}
         JOIN public.profiles p ON p.id = ts.user_id AND COALESCE(p.is_suspended, false) = false
         WHERE me.user_id = @myId AND me.game_slug = 'valorant' AND {Active("me")}
+          AND {NotBlocked("me.user_id", "ts.user_id")}
         """;
 
     /// <summary>Unseen likes for @myId: likers whose session is live and whom @mySession has not acted on.</summary>
@@ -64,6 +72,7 @@ internal static class LfgSwipeSql
         SELECT count(*)::int FROM public.lfg_swipe_actions a
         JOIN public.lfg_swipe_sessions s ON s.id = a.session_id AND {Active("s")}
         WHERE a.direction = 'like' AND a.target_user_id = @myId
+          AND {NotBlocked("@myId", "s.user_id")}
           AND NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mine
                           WHERE mine.session_id = @mySession AND mine.target_user_id = s.user_id)
         """;
@@ -109,6 +118,7 @@ internal static class LfgSwipeSql
                         WHEN me.roles && their.roles THEN 1 ELSE 2 END AS score) syn
         WHERE NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions seen
                           WHERE seen.session_id = me.id AND seen.target_user_id = s.user_id)
+          AND {NotBlocked("@myId", "s.user_id")}
         ORDER BY liked_you DESC, synergy_score DESC, random()
         LIMIT @limit
         """;

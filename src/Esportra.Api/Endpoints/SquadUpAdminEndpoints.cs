@@ -57,6 +57,18 @@ public static class SquadUpAdminEndpoints
             """, new { range })).ToList();
         var flag = await conn.QuerySingleOrDefaultAsync<SquadUpFlagRow>(
             "SELECT id, is_enabled FROM public.feature_flags WHERE key = 'squad_up'");
+        var reports = await conn.QuerySingleAsync<SquadUpReportCountsRow>(
+            """
+            SELECT count(*) FILTER (WHERE status = 'open')::int AS open,
+                   count(*) FILTER (WHERE created_at > now() - interval '7 days')::int AS last7_days,
+                   COALESCE(round(avg(extract(epoch FROM (resolved_at - created_at)) / 3600) FILTER (WHERE status = 'resolved'))::int, 0) AS avg_resolution_hours
+            FROM public.squad_up_reports
+            """);
+        var byReason = await conn.QueryAsync<SquadUpReasonCountRow>(
+            """
+            SELECT reason, count(*)::int AS count FROM public.squad_up_reports
+            WHERE created_at >= now() - make_interval(days => @range) GROUP BY reason ORDER BY count DESC
+            """, new { range });
         var rights = series.Sum(d => d.SwipesRight);
         var matches = series.Sum(d => d.Matches);
         return Results.Ok(new
@@ -73,6 +85,7 @@ public static class SquadUpAdminEndpoints
                 matchRate = rights == 0 ? 0m : Math.Round(100m * matches / rights, 1),
             },
             series,
+            reports = new { reports.Open, reports.Last7Days, reports.AvgResolutionHours, byReason },
         });
     }
 
@@ -123,6 +136,19 @@ public static class SquadUpAdminEndpoints
             "DELETE FROM public.lfg_swipe_sessions WHERE user_id = @userId AND game_slug = 'valorant'", new { userId });
         return removed == 0 ? Results.NotFound(new { error = "NO_SESSION" }) : Results.NoContent();
     }
+}
+
+public sealed record SquadUpReportCountsRow
+{
+    public int Open { get; init; }
+    public int Last7Days { get; init; }
+    public int AvgResolutionHours { get; init; }
+}
+
+public sealed record SquadUpReasonCountRow
+{
+    public string Reason { get; init; } = "";
+    public int Count { get; init; }
 }
 
 public sealed record SquadUpRegionRow
