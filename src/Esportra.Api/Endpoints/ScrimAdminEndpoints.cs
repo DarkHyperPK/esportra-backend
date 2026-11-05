@@ -26,6 +26,9 @@ public static class ScrimAdminEndpoints
         app.MapGet("/api/admin/scrims/disputes", GetDisputesAsync)
             .RequireAuthorization("Authenticated");
 
+        app.MapGet("/api/admin/scrims/disputes/{id:guid}", GetDisputeDetailAsync)
+            .RequireAuthorization("Authenticated");
+
         app.MapPost("/api/admin/scrims/disputes/{id:guid}/resolve", ResolveDisputeAsync)
             .RequireAuthorization("Authenticated");
 
@@ -83,6 +86,63 @@ public static class ScrimAdminEndpoints
             new { statusFilter, actualSize, offset });
 
         return Results.Ok(new { items = rows, total = totalCount, page = actualPage, pageSize = actualSize });
+    }
+
+    // ── GET /api/admin/scrims/disputes/{id} ────────────────────────────────────
+
+    private static async Task<IResult> GetDisputeDetailAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+        if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.DisputesView))
+            return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+
+        var dispute = await conn.QuerySingleOrDefaultAsync<ScrimDisputeDetailRow>(
+            """
+            SELECT
+                sd.id, sd.session_id, sd.raised_by_team_id, sd.reason, sd.status,
+                sd.evidence_urls, sd.responder_evidence_urls, sd.responder_notes,
+                sd.resolved_by, sd.outcome, sd.resolution_notes,
+                sd.resolved_at, sd.created_at, sd.game_number,
+                rt.name                             AS raised_by_team_name,
+                ss.team1_id, ss.team2_id,
+                ss.game_slug, ss.scheduled_at,
+                ss.best_of, ss.team1_score, ss.team2_score,
+                ss.status                           AS session_status,
+                ss.match_format,
+                t1.name                             AS team1_name,
+                t2.name                             AS team2_name,
+                pu.username                         AS resolved_by_username
+            FROM public.scrim_disputes sd
+            JOIN public.scrim_sessions ss  ON ss.id  = sd.session_id
+            JOIN public.teams rt           ON rt.id  = sd.raised_by_team_id
+            JOIN public.teams t1           ON t1.id  = ss.team1_id
+            JOIN public.teams t2           ON t2.id  = ss.team2_id
+            LEFT JOIN public.profiles pu   ON pu.id  = sd.resolved_by
+            WHERE sd.id = @id
+            """,
+            new { id });
+
+        if (dispute is null) return Results.NotFound();
+
+        var games = await conn.QueryAsync<ScrimDisputeGameRow>(
+            """
+            SELECT game_number, status, map_name, team1_score, team2_score, winner_slot,
+                   source, screenshot_urls, notes, reported_at, confirmed_at, auto_confirmed,
+                   disputed_by_team_id
+            FROM public.scrim_games
+            WHERE session_id = @sessionId
+            ORDER BY game_number
+            """,
+            new { sessionId = dispute.SessionId });
+
+        return Results.Ok(new { dispute, games });
     }
 
     // ── POST /api/admin/scrims/disputes/{id}/resolve ────────────────────────────
@@ -242,6 +302,23 @@ public static class ScrimAdminEndpoints
     }
 
     // ── Private projections ────────────────────────────────────────────────────
+
+    private sealed record ScrimDisputeDetailRow(
+        Guid Id, Guid SessionId, Guid RaisedByTeamId, string Reason, string Status,
+        string[]? EvidenceUrls, string[]? ResponderEvidenceUrls, string? ResponderNotes,
+        Guid? ResolvedBy, string? Outcome, string? ResolutionNotes,
+        DateTime? ResolvedAt, DateTime CreatedAt, int? GameNumber,
+        string? RaisedByTeamName,
+        Guid Team1Id, Guid Team2Id, string? GameSlug, DateTime? ScheduledAt,
+        int? BestOf, int Team1Score, int Team2Score, string SessionStatus, string? MatchFormat,
+        string? Team1Name, string? Team2Name, string? ResolvedByUsername);
+
+    private sealed record ScrimDisputeGameRow(
+        int GameNumber, string Status, string? MapName,
+        int Team1Score, int Team2Score, int? WinnerSlot,
+        string Source, string[]? ScreenshotUrls, string? Notes,
+        DateTime ReportedAt, DateTime? ConfirmedAt, bool AutoConfirmed,
+        Guid? DisputedByTeamId);
 
     private sealed record ScrimDisputeAdminRow(
         Guid Id, Guid SessionId, Guid RaisedByTeamId, string Reason, string Status,
