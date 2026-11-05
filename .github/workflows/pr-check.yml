@@ -38,7 +38,7 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore --runtime linux-x64
 
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
@@ -57,7 +57,7 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore --runtime linux-x64
 
       - name: Check formatting
         run: dotnet format --verify-no-changes --verbosity diagnostic
@@ -76,7 +76,7 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore --runtime linux-x64
 
       - name: Run tests
         run: dotnet test --no-restore -c Release --logger "trx;LogFileName=results.trx"
