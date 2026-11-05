@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
@@ -8,6 +9,7 @@ using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
@@ -44,6 +46,8 @@ public static class LfgEndpoints
         app.MapGet("/api/competitive/lfg/mine", GetMineAsync)
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/interests/mine", LfgExperienceEndpoints.GetInterestsAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/lfg/interests/pending-count", GetPendingInterestCountAsync)
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/saved", LfgExperienceEndpoints.GetSavedAsync)
             .RequireAuthorization("Authenticated");
@@ -633,7 +637,22 @@ public static class LfgEndpoints
                    pgp.rank_tier_key, pgp.rank_source, pgp.preferred_roles, pgp.region_key,
                    grt.display_name AS rank_tier_display_name,
                    grt.icon_url     AS rank_tier_icon_url,
-                   reg.display_name AS region_display_name
+                   reg.display_name AS region_display_name,
+                   pgs.competitive_tier, pgs.competitive_tier_name,
+                   pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
+                   pgs.matches_analyzed, pgs.sync_status AS stats_sync_status, pgs.player_card_id,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL
+                         WHEN jsonb_typeof(pgs.popular_agents) = 'array'
+                         THEN (SELECT COALESCE(jsonb_agg(
+                                 CASE WHEN item->>'headshot_data_complete' = 'true' THEN item
+                                      ELSE item - 'hs_pct' END), '[]'::jsonb)
+                               FROM jsonb_array_elements(pgs.popular_agents) item)
+                         ELSE '[]'::jsonb END)::text AS popular_agents,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true)
+                        THEN ra.game_name END AS riot_game_name,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true)
+                        THEN ra.tag_line END AS riot_tag_line
             FROM public.lfg_interests i
             JOIN public.profiles pr ON pr.id = i.from_user_id
             LEFT JOIN public.player_game_profiles pgp
@@ -647,12 +666,42 @@ public static class LfgEndpoints
                 ON reg.region_key = pgp.region_key
                AND reg.game_slug = @gameSlug
                AND reg.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = i.from_user_id AND pgs.game_slug = @gameSlug
+               AND (@gameSlug <> 'valorant' OR EXISTS (
+                    SELECT 1 FROM public.riot_accounts linked
+                    WHERE linked.user_id = i.from_user_id AND linked.puuid = pgs.provider_player_id))
+            LEFT JOIN public.riot_accounts ra ON ra.user_id = i.from_user_id
             WHERE i.listing_id = @listingId
             ORDER BY i.created_at DESC
             """,
             new { listingId = id, gameSlug = listing.GameSlug });
 
         return Results.Ok(interests);
+    }
+
+    // ── GET /api/competitive/lfg/interests/pending-count ─────────────────────
+
+    private static async Task<IResult> GetPendingInterestCountAsync(
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var count = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)::int
+            FROM public.lfg_interests i
+            JOIN public.lfg_listings l ON l.id = i.listing_id
+            WHERE l.user_id = @userId
+              AND i.status = 'expressed'
+            """,
+            new { userId = userCtx.UserIdGuid });
+
+        return Results.Ok(new { pending_count = count });
     }
 
     // ── PUT /api/competitive/lfg/{id} ─────────────────────────────────────────
@@ -876,6 +925,7 @@ public static class LfgEndpoints
         [FromBody] ExpressInterestRequest? req,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> notifHub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -936,6 +986,19 @@ public static class LfgEndpoints
             fromUsername = fromUsername ?? ""
         }, tx);
         tx.Commit();
+        try
+        {
+            await notifHub.Clients.Group(NotificationHub.UserGroup(listing.UserId.ToString()))
+                .SendAsync(NotificationHubEvents.NewNotification, new
+                {
+                    type = "lfg_interest_received",
+                    title = $"{fromUsername ?? "Someone"} is interested in your listing",
+                    message = row.Message ?? "They want to connect.",
+                    link = $"/competitive/lfg/{id}",
+                    data = new { interest_id = row.Id.ToString(), listing_id = id.ToString(), from_username = fromUsername ?? "" }
+                }, ct);
+        }
+        catch { /* notification persisted; transport failure is non-fatal */ }
         return Results.Ok(row);
     }
 
@@ -975,12 +1038,15 @@ public static class LfgEndpoints
         Guid interestId,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> notifHub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+        using var tx = conn.BeginTransaction();
         var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             UPDATE public.lfg_interests
@@ -989,9 +1055,42 @@ public static class LfgEndpoints
               AND status = 'expressed'
             RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
             """,
-            new { id = interestId, userId = userCtx.UserIdGuid });
+            new { id = interestId, userId = userCtx.UserIdGuid }, tx);
 
-        return row is null ? Results.NotFound() : Results.Ok(row);
+        if (row is null) return Results.NotFound();
+
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+            VALUES (@recipient, 'lfg_interest_declined', @title, @message, @link,
+                jsonb_build_object('interest_id', @interestId::text, 'listing_id', @listingId::text), FALSE)
+            """,
+            new
+            {
+                recipient = row.FromUserId,
+                title = "Your request was declined",
+                message = "Keep looking — there are more teams out there.",
+                link = "/competitive/find-teammates",
+                interestId,
+                listingId = row.ListingId
+            }, tx);
+
+        tx.Commit();
+
+        try
+        {
+            await notifHub.Clients.Group(NotificationHub.UserGroup(row.FromUserId.ToString()))
+                .SendAsync(NotificationHubEvents.NewNotification, new
+                {
+                    type = "lfg_interest_declined",
+                    title = "Your request was declined",
+                    message = "Keep looking — there are more teams out there.",
+                    link = "/competitive/find-teammates"
+                }, ct);
+        }
+        catch { /* persisted; transport failure is non-fatal */ }
+
+        return Results.Ok(row);
     }
 
     // ── GET /api/competitive/game-stats/me ───────────────────────────────────

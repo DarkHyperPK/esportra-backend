@@ -362,6 +362,19 @@ public sealed record LfgInterestEnrichedRow
     public string? RankTierDisplayName { get; init; }
     public string? RankTierIconUrl { get; init; }
     public string? RegionDisplayName { get; init; }
+    public int? CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public int? WinCount { get; init; }
+    public int? LossCount { get; init; }
+    public decimal? WinRate { get; init; }
+    public decimal? KdRatio { get; init; }
+    public decimal? HsPct { get; init; }
+    public int? MatchesAnalyzed { get; init; }
+    public string? PopularAgents { get; init; }
+    public string? StatsSyncStatus { get; init; }
+    public string? PlayerCardId { get; init; }
+    public string? RiotGameName { get; init; }
+    public string? RiotTagLine { get; init; }
 }
 
 // ── Catalog ───────────────────────────────────────────────────────────────────────

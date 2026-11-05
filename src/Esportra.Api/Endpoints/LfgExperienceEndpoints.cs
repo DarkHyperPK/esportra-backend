@@ -176,7 +176,7 @@ public static class LfgExperienceEndpoints
     }
 
     public static async Task<IResult> AcceptAsync(Guid interestId, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<ConversationHub> hub, ILoggerFactory loggerFactory)
+        IHubContext<ConversationHub> hub, IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory)
     {
         var user = User(ctx);
         if (user is null) return Results.Unauthorized();
@@ -231,10 +231,23 @@ public static class LfgExperienceEndpoints
             }
             catch (Exception ex)
             {
-                // The durable reference remains available on reload. A transport
-                // failure must not report a committed acceptance as a failed write.
                 loggerFactory.CreateLogger(nameof(LfgExperienceEndpoints)).LogWarning(ex, "LFG conversation update could not be broadcast.");
             }
+        }
+        if (row.Status == "expressed")
+        {
+            try
+            {
+                await notifHub.Clients.Group(NotificationHub.UserGroup(row.FromUserId.ToString()))
+                    .SendAsync(NotificationHubEvents.NewNotification, new
+                    {
+                        type = "lfg_interest_accepted",
+                        title = "Your request was accepted",
+                        message = "A conversation is ready.",
+                        link = $"/inbox/{conversation}"
+                    });
+            }
+            catch { /* persisted; transport failure is non-fatal */ }
         }
         return Results.Ok(new { interest = updated, conversation_id = conversation });
     }
