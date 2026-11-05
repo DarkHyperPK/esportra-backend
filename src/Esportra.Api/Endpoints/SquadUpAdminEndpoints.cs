@@ -110,7 +110,7 @@ public static class SquadUpAdminEndpoints
         var rows = await conn.QueryAsync<SquadUpSessionRow>(
             $"""
             SELECT s.user_id, p.username, s.region, s.competitive_tier, s.mic_on, s.slots_needed, s.started_at, s.last_heartbeat,
-                   s.mode, s.country_code,
+                   s.mode, s.country_code, s.area, s.note,
                    (SELECT count(*) FROM public.lfg_swipe_actions a WHERE a.session_id = s.id AND a.direction = 'like')::int AS likes_sent,
                    (SELECT count(*) FROM public.lfg_swipe_actions a WHERE a.session_id = s.id AND a.direction = 'pass')::int AS passes_sent
             FROM public.lfg_swipe_sessions s
@@ -147,7 +147,7 @@ public static class SquadUpAdminEndpoints
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<SquadUpAdminLobbyRow>(
             $"""
-            SELECT l.id, l.host_id, p.username AS host_username, l.title, l.mode, l.region, l.country_code, l.open_slots, l.status, l.created_at,
+            SELECT l.id, l.host_id, p.username AS host_username, l.title, l.mode, l.region, l.country_code, l.area, l.open_slots, l.status, l.created_at,
                    (SELECT count(*) FROM public.squad_up_lobby_members m WHERE m.lobby_id = l.id AND m.status = 'accepted')::int AS accepted_count,
                    (SELECT count(*) FROM public.squad_up_lobby_members m WHERE m.lobby_id = l.id AND m.status = 'requested')::int AS pending_count
             FROM public.squad_up_lobbies l JOIN public.profiles p ON p.id = l.host_id
@@ -216,7 +216,8 @@ public sealed record SquadUpAdminLobbyRow
     public string Title { get; init; } = "";
     public string Mode { get; init; } = "";
     public string Region { get; init; } = "";
-    public string CountryCode { get; init; } = "";
+    public string? CountryCode { get; init; }
+    public string? Area { get; init; }
     public int OpenSlots { get; init; }
     public int AcceptedCount { get; init; }
     public int PendingCount { get; init; }
@@ -248,6 +249,8 @@ public sealed record SquadUpSessionRow
     public string Region { get; init; } = "";
     public string Mode { get; init; } = "";
     public string? CountryCode { get; init; }
+    public string? Area { get; init; }
+    public string? Note { get; init; }
     public int? CompetitiveTier { get; init; }
     public bool MicOn { get; init; }
     public int SlotsNeeded { get; init; }

@@ -84,7 +84,7 @@ public sealed class SquadUpReportEndpointsTests(ApiFactory factory) : IAsyncLife
             VALUES (@id, 'valorant', @puuid, @tier, 'Gold 1', 'complete', now());
             """, new { id, puuid = $"puuid-{id}", region, tier });
         var player = new Player(id, As(id));
-        (await player.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = slots })).EnsureSuccessStatusCode();
+        (await player.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = slots, area = "south-asia" })).EnsureSuccessStatusCode();
         return player;
     }
 
@@ -372,7 +372,7 @@ public sealed class SquadUpReportEndpointsTests(ApiFactory factory) : IAsyncLife
             .Should().Be(HttpStatusCode.OK);
 
         (await reported.Client.PostAsync($"{Swipe}/session/heartbeat", null)).StatusCode.Should().Be(HttpStatusCode.NotFound);
-        var start = await reported.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1 });
+        var start = await reported.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1, area = "south-asia" });
         start.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         var body = await Json(start);
         body.GetProperty("error").GetString().Should().Be("SQUAD_UP_RESTRICTED");
@@ -381,7 +381,7 @@ public sealed class SquadUpReportEndpointsTests(ApiFactory factory) : IAsyncLife
 
         var restriction = (await Json(await manager.GetAsync($"{Admin}/restrictions"))).EnumerateArray().Single(r => r.GetProperty("userId").GetGuid() == reported.Id);
         (await manager.PostAsync($"{Admin}/restrictions/{restriction.GetProperty("id").GetGuid()}/lift", null)).StatusCode.Should().Be(HttpStatusCode.NoContent);
-        (await reported.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1 })).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await reported.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1, area = "south-asia" })).StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]

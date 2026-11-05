@@ -10,8 +10,8 @@ internal static class SquadUpLobbySql
     /// <summary>A row describing the caller, shaped like a session so the shared compatibility rules apply.</summary>
     public const string MeCte =
         """
-        me AS (SELECT @game::text AS game_slug, @mode::text AS mode, @region::text AS region, @country::text AS country_code,
-                      @countries::text[] AS wanted_countries, @tier::int AS competitive_tier, @minTier::int AS min_tier, @maxTier::int AS max_tier)
+        me AS (SELECT @game::text AS game_slug, @mode::text AS mode, @region::text AS region, @area::text AS area,
+                      @tier::int AS competitive_tier, @minTier::int AS min_tier, @maxTier::int AS max_tier)
         """;
 
     public const string AcceptedCount =
@@ -22,7 +22,7 @@ internal static class SquadUpLobbySql
         $"""
         SELECT l.id, l.host_id, hp.username AS host_username, hp.avatar_url AS host_avatar_url, hp.avatar_seed AS host_avatar_seed,
                hp.avatar_style AS host_avatar_style, l.competitive_tier AS host_tier, pgs.competitive_tier_name AS host_tier_name,
-               l.title, l.mode, l.region, l.country_code, l.wanted_countries, l.min_tier, l.max_tier, l.open_slots,
+               l.title, l.mode, l.region, l.country_code, l.area, l.min_tier, l.max_tier, l.open_slots,
                {AcceptedCount} AS accepted_count, l.wanted_roles, l.mic_required, l.status, l.created_at,
                (SELECT mm.status FROM public.squad_up_lobby_members mm WHERE mm.lobby_id = l.id AND mm.user_id = @myId) AS my_status,
                CASE WHEN l.host_id = @myId OR EXISTS (SELECT 1 FROM public.squad_up_lobby_members cm
@@ -49,7 +49,7 @@ internal static class SquadUpLobbySql
           AND {LfgSwipeSql.Compatible("l", "me")}
           AND {LfgSwipeSql.NotBlocked("@myId", "l.host_id")}
           AND {AcceptedCount} < l.open_slots
-        ORDER BY (l.wanted_countries @> ARRAY[@country]::text[] AND l.country_code = @country) DESC, l.created_at DESC
+        ORDER BY (l.country_code = @country) DESC NULLS LAST, l.created_at DESC
         LIMIT 30
         """;
 

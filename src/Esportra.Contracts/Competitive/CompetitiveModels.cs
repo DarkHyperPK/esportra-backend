@@ -467,7 +467,8 @@ public sealed record LfgSwipeSessionDto
     public int? CompetitiveTier { get; init; }
     public string Mode { get; init; } = "competitive";
     public string? CountryCode { get; init; }
-    public string[] WantedCountries { get; init; } = [];
+    public string? Area { get; init; }
+    public string? Note { get; init; }
     public int? MinTier { get; init; }
     public int? MaxTier { get; init; }
     public bool MicOn { get; init; }
@@ -488,6 +489,12 @@ public sealed record LfgSwipeCardDto
     public string? CompetitiveTierIconUrl { get; init; }
     public string Mode { get; init; } = "competitive";
     public string? CountryCode { get; init; }
+    public string? Area { get; init; }
+    /// <summary>The player's own line for their card. Plain text, at most 100 characters.</summary>
+    public string? Note { get; init; }
+    /// <summary>Riot player card id; the client shows its wide art as the card banner (same as LFG listings).</summary>
+    public string? PlayerCardId { get; init; }
+    public string? ProfileBannerUrl { get; init; }
     public decimal? WinRate { get; init; }
     public decimal? KdRatio { get; init; }
     public decimal? HsPct { get; init; }

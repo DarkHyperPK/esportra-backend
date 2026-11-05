@@ -13,7 +13,7 @@ namespace Esportra.Api.Endpoints;
 /// <summary>
 /// Squad Up Lobby mode: fill a whole team in real time.
 /// POST /api/competitive/lfg/swipe/lobbies                                   — open a lobby (one per host)
-/// GET  /api/competitive/lfg/swipe/lobbies?mode=&amp;countries=&amp;min_tier=&amp;max_tier= — compatible open lobbies
+/// GET  /api/competitive/lfg/swipe/lobbies?mode=&amp;area=&amp;min_tier=&amp;max_tier=      — compatible open lobbies
 /// GET  /api/competitive/lfg/swipe/lobbies/mine                              — the lobby I host and the ones I asked to join
 /// POST /api/competitive/lfg/swipe/lobbies/{id}/close                        — host closes the lobby
 /// Membership (request / accept / decline / leave / kick) lives in <see cref="SquadUpLobbyMembership"/>.
@@ -45,7 +45,7 @@ public static partial class SquadUpLobbyEndpoints
 
         using var conn = db.CreateConnection();
         var player = await SquadUpEligibility.LoadAsync(conn, me.UserIdGuid);
-        var (filters, filterError) = SquadUpEligibility.Normalise(req.Preferences, player.Country);
+        var (filters, filterError) = SquadUpEligibility.Normalise(req.Preferences);
         if (filters is null) return Results.BadRequest(new { error = filterError });
         var refused = await SquadUpEligibility.CheckAsync(conn, me.UserIdGuid, player, filters);
         if (refused is not null) return refused;
@@ -60,9 +60,9 @@ public static partial class SquadUpLobbyEndpoints
             return Results.Conflict(new { error = "LOBBY_EXISTS" });
         var id = await conn.QuerySingleAsync<Guid>(
             """
-            INSERT INTO public.squad_up_lobbies (host_id, game_slug, mode, region, country_code, wanted_countries, competitive_tier,
+            INSERT INTO public.squad_up_lobbies (host_id, game_slug, mode, region, country_code, area, competitive_tier,
                                                  min_tier, max_tier, title, open_slots, wanted_roles, mic_required)
-            VALUES (@hostId, @game, @mode, @region, @country, @countries, @tier, @minTier, @maxTier, @title, @slots, @roles, @mic)
+            VALUES (@hostId, @game, @mode, @region, @country, @area, @tier, @minTier, @maxTier, @title, @slots, @roles, @mic)
             RETURNING id
             """, new
             {
@@ -71,7 +71,7 @@ public static partial class SquadUpLobbyEndpoints
                 mode = filters.Mode,
                 region = player.Region,
                 country = player.Country,
-                countries = filters.WantedCountries,
+                area = filters.Area,
                 tier = player.Tier,
                 minTier = filters.MinTier,
                 maxTier = filters.MaxTier,
@@ -89,14 +89,14 @@ public static partial class SquadUpLobbyEndpoints
         conn.QuerySingleOrDefaultAsync<SquadUpLobbyDto>($"{SquadUpLobbySql.Select} WHERE l.id = @lobbyId", new { lobbyId, myId }, tx);
 
     private static async Task<IResult> BoardAsync(
-        [FromQuery] string? mode, [FromQuery] string? countries, [FromQuery(Name = "min_tier")] int? minTier,
+        [FromQuery] string? mode, [FromQuery] string? area, [FromQuery(Name = "min_tier")] int? minTier,
         [FromQuery(Name = "max_tier")] int? maxTier, HttpContext ctx, IDbConnectionFactory db)
     {
         if (ctx.Items["UserContext"] is not UserContext me) return Results.Unauthorized();
         using var conn = db.CreateConnection();
         var player = await SquadUpEligibility.LoadAsync(conn, me.UserIdGuid);
-        var prefs = new SquadUpPreferences("valorant", mode, countries?.Split(',', StringSplitOptions.RemoveEmptyEntries), minTier, maxTier);
-        var (filters, filterError) = SquadUpEligibility.Normalise(prefs, player.Country);
+        var prefs = new SquadUpPreferences("valorant", mode, area, minTier, maxTier);
+        var (filters, filterError) = SquadUpEligibility.Normalise(prefs);
         if (filters is null) return Results.BadRequest(new { error = filterError });
         var refused = await SquadUpEligibility.CheckAsync(conn, me.UserIdGuid, player, filters);
         if (refused is not null) return refused;
@@ -107,7 +107,7 @@ public static partial class SquadUpLobbyEndpoints
             mode = filters.Mode,
             region = player.Region,
             country = player.Country,
-            countries = filters.WantedCountries,
+            area = filters.Area,
             tier = player.Tier,
             minTier = filters.MinTier,
             maxTier = filters.MaxTier,
@@ -157,12 +157,12 @@ public sealed record CreateLobbyRequest(
     [property: JsonPropertyName("mic_required")] bool MicRequired = false,
     [property: JsonPropertyName("game")] string? Game = null,
     [property: JsonPropertyName("mode")] string? Mode = null,
-    [property: JsonPropertyName("wanted_countries")] string[]? WantedCountries = null,
+    [property: JsonPropertyName("area")] string? Area = null,
     [property: JsonPropertyName("min_tier")] int? MinTier = null,
     [property: JsonPropertyName("max_tier")] int? MaxTier = null)
 {
     [JsonIgnore]
-    public SquadUpPreferences Preferences => new(Game, Mode, WantedCountries, MinTier, MaxTier);
+    public SquadUpPreferences Preferences => new(Game, Mode, Area, MinTier, MaxTier);
 }
 
 public sealed record SquadUpLobbyDto
@@ -178,8 +178,8 @@ public sealed record SquadUpLobbyDto
     public string Title { get; init; } = "";
     public string Mode { get; init; } = "";
     public string Region { get; init; } = "";
-    public string CountryCode { get; init; } = "";
-    public string[] WantedCountries { get; init; } = [];
+    public string? CountryCode { get; init; }
+    public string? Area { get; init; }
     public int? MinTier { get; init; }
     public int? MaxTier { get; init; }
     public int OpenSlots { get; init; }

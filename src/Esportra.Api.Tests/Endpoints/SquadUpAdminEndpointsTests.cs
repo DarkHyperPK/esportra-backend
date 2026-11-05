@@ -38,7 +38,7 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
                 """, new { id, puuid = $"puuid-{id}", region, tier });
         }
         var player = new Player(id, factory.CreateAuthenticatedClient(id));
-        (await player.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 3 })).EnsureSuccessStatusCode();
+        (await player.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 3, area = "south-asia" })).EnsureSuccessStatusCode();
         return player;
     }
 
@@ -117,7 +117,7 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
         var admin = await AdminWith("squad_up:view");
         var p = await Queued();
         var before = (await Json(await admin.GetAsync($"{Admin}/overview"))).GetProperty("totals").GetProperty("sessionsStarted").GetInt32();
-        (await p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = false, slots_needed = 2 })).EnsureSuccessStatusCode();
+        (await p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = false, slots_needed = 2, area = "south-asia" })).EnsureSuccessStatusCode();
         var after = (await Json(await admin.GetAsync($"{Admin}/overview"))).GetProperty("totals").GetProperty("sessionsStarted").GetInt32();
         after.Should().Be(before);
     }

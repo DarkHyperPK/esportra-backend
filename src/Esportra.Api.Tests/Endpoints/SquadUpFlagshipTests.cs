@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Esportra.Api.Tests.Endpoints;
 
-/// <summary>Squad Up filters (mode, countries, rank range, shard), idle removal, Lobby mode and public stats.</summary>
+/// <summary>Squad Up filters (mode, home area, rank range, shard), card notes, idle removal, Lobby mode and public stats.</summary>
 [Collection(IntegrationCollection.Name)]
 public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
 {
@@ -41,14 +41,15 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
         return new Player(id, factory.CreateAuthenticatedClient(id));
     }
 
-    private static Task<HttpResponseMessage> Start(Player p, string mode = "competitive", string[]? countries = null, int? minTier = null, int? maxTier = null) =>
-        p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 3, mode, wanted_countries = countries, min_tier = minTier, max_tier = maxTier });
+    private static Task<HttpResponseMessage> Start(Player p, string mode = "competitive", string? area = "south-asia", int? minTier = null, int? maxTier = null,
+        string? note = null) =>
+        p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 3, mode, area, min_tier = minTier, max_tier = maxTier, note });
 
-    private async Task<Player> Queued(string country = "PK", int? tier = 15, string mode = "competitive", string[]? countries = null,
+    private async Task<Player> Queued(string country = "PK", int? tier = 15, string mode = "competitive", string area = "south-asia",
         int? minTier = null, int? maxTier = null, string? region = null, bool stats = true)
     {
         var p = await NewPlayer(country, tier, region, stats);
-        (await Start(p, mode, countries, minTier, maxTier)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await Start(p, mode, area, minTier, maxTier)).StatusCode.Should().Be(HttpStatusCode.OK);
         return p;
     }
 
@@ -73,16 +74,39 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
     // ── Duo filters ───────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Countries_MustBeWantedByBothPlayers()
+    public async Task Players_OnlyMeetPlayersFromTheAreaTheyLiveIn()
     {
-        var pk = await Queued("PK");
-        var ae = await Queued("AE", countries: ["AE", "PK"]);
-        (await CardIds(pk)).Should().NotContain(ae.Id, "PK only wants PK");
-        (await CardIds(ae)).Should().NotContain(pk.Id, "PK does not want AE, so AE must not see them either");
+        var southAsia = await Queued("PK");
+        var gulf = await Queued("AE", area: "middle-east");
+        (await CardIds(southAsia)).Should().NotContain(gulf.Id);
+        (await CardIds(gulf)).Should().NotContain(southAsia.Id);
 
-        (await Start(pk, countries: ["PK", "AE"])).EnsureSuccessStatusCode();
-        (await CardIds(pk)).Should().Contain(ae.Id);
-        (await CardIds(ae)).Should().Contain(pk.Id);
+        // Someone whose profile says PK but who lives in the Gulf picks Middle East and meets Gulf players.
+        (await Start(southAsia, area: "middle-east")).EnsureSuccessStatusCode();
+        (await CardIds(southAsia)).Should().Contain(gulf.Id);
+        (await CardIds(gulf)).Should().Contain(southAsia.Id);
+    }
+
+    [Fact]
+    public async Task Cards_ShowTheNoteAndPlayerCardArt()
+    {
+        var viewer = await Queued();
+        var shown = await NewPlayer();
+        await Exec("UPDATE public.player_game_stats SET player_card_id = 'card-1' WHERE user_id = @id", new { id = shown.Id });
+        (await Start(shown, note: "  I smoke,\n you entry.  ")).EnsureSuccessStatusCode();
+        var card = (await Json(await viewer.Client.GetAsync($"{Swipe}/cards?limit=10"))).EnumerateArray()
+            .Single(c => c.GetProperty("userId").GetGuid() == shown.Id);
+        card.GetProperty("note").GetString().Should().Be("I smoke, you entry.", "control characters and extra spaces are tidied");
+        card.GetProperty("playerCardId").GetString().Should().Be("card-1");
+        card.GetProperty("area").GetString().Should().Be("south-asia");
+    }
+
+    [Fact]
+    public async Task Start_WithoutProfileCountry_StillWorks_TheAreaIsWhatMatters()
+    {
+        var noCountry = await NewPlayer();
+        await Exec("UPDATE public.profiles SET country_code = NULL WHERE id = @id", new { id = noCountry.Id });
+        (await Start(noCountry)).StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
@@ -120,18 +144,17 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Start_ValidatesCountryGameAndFilters()
+    public async Task Start_ValidatesAreaGameNoteAndFilters()
     {
-        var noCountry = await NewPlayer();
-        await Exec("UPDATE public.profiles SET country_code = NULL WHERE id = @id", new { id = noCountry.Id });
-        (await Error(await Start(noCountry))).Should().Be("COUNTRY_REQUIRED");
-
         var p = await NewPlayer();
-        (await Error(await Start(p, countries: ["Pakistan"]))).Should().Be("INVALID_COUNTRIES");
+        (await Error(await Start(p, area: null))).Should().Be("INVALID_AREA");
+        (await Error(await Start(p, area: "mars"))).Should().Be("INVALID_AREA");
         (await Error(await Start(p, minTier: 20, maxTier: 10))).Should().Be("INVALID_RANK_RANGE");
-        (await Error(await p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1, game = "chess" }))).Should().Be("UNSUPPORTED_GAME");
-        var ok = await Json(await Start(p, countries: ["pk", "ae"]));
-        ok.GetProperty("wantedCountries").EnumerateArray().Select(c => c.GetString()).Should().BeEquivalentTo("PK", "AE");
+        (await Error(await Start(p, note: new string('a', 101)))).Should().Be("NOTE_TOO_LONG");
+        (await Error(await p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = true, slots_needed = 1, game = "chess", area = "europe" }))).Should().Be("UNSUPPORTED_GAME");
+        var ok = await Json(await Start(p, area: "South-Asia", note: "   "));
+        ok.GetProperty("area").GetString().Should().Be("south-asia");
+        ok.GetProperty("note").ValueKind.Should().Be(JsonValueKind.Null, "a blank note is no note");
     }
 
     // ── presence ──────────────────────────────────────────────────────────────
@@ -165,8 +188,8 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
 
     // ── lobby mode ────────────────────────────────────────────────────────────
 
-    private static Task<HttpResponseMessage> OpenLobby(Player host, int slots = 2, string mode = "competitive", string[]? countries = null) =>
-        host.Client.PostAsJsonAsync(Lobbies, new { open_slots = slots, title = "Need smokes", wanted_roles = new[] { "controller" }, mode, wanted_countries = countries });
+    private static Task<HttpResponseMessage> OpenLobby(Player host, int slots = 2, string mode = "competitive", string area = "south-asia") =>
+        host.Client.PostAsJsonAsync(Lobbies, new { open_slots = slots, title = "Need smokes", wanted_roles = new[] { "controller" }, mode, area });
 
     private static async Task<Guid> LobbyId(HttpResponseMessage created)
     {
@@ -174,8 +197,8 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
         return (await Json(created)).GetProperty("id").GetGuid();
     }
 
-    private static async Task<List<Guid>> Board(Player p, string countries = "PK") =>
-        (await Json(await p.Client.GetAsync($"{Lobbies}?mode=competitive&countries={countries}"))).EnumerateArray().Select(l => l.GetProperty("id").GetGuid()).ToList();
+    private static async Task<List<Guid>> Board(Player p, string area = "south-asia") =>
+        (await Json(await p.Client.GetAsync($"{Lobbies}?mode=competitive&area={area}"))).EnumerateArray().Select(l => l.GetProperty("id").GetGuid()).ToList();
 
     [Fact]
     public async Task Lobby_OnePerHost_AndTheBoardOnlyShowsCompatibleLobbies()
@@ -184,12 +207,12 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
         var lobby = await LobbyId(await OpenLobby(host));
         (await Error(await OpenLobby(host))).Should().Be("LOBBY_EXISTS");
 
-        var sameCountry = await NewPlayer();
-        var otherCountry = await NewPlayer("AE");
+        var sameArea = await NewPlayer();
+        var otherArea = await NewPlayer("AE");
         var unrated = await NewPlayer();
-        (await Board(sameCountry)).Should().Contain(lobby);
-        (await Board(otherCountry, "PK,AE")).Should().NotContain(lobby, "the lobby only wants PK");
-        (await Json(await unrated.Client.GetAsync($"{Lobbies}?mode=unrated&countries=PK"))).EnumerateArray()
+        (await Board(sameArea)).Should().Contain(lobby);
+        (await Board(otherArea, "middle-east")).Should().NotContain(lobby, "the lobby is in South Asia");
+        (await Json(await unrated.Client.GetAsync($"{Lobbies}?mode=unrated&area=south-asia"))).EnumerateArray()
             .Select(l => l.GetProperty("id").GetGuid()).Should().NotContain(lobby);
         (await Board(host)).Should().NotContain(lobby, "hosts don't see their own lobby on the board");
     }
@@ -201,7 +224,8 @@ public sealed class SquadUpFlagshipTests(ApiFactory factory) : IAsyncLifetime
         var lobby = await LobbyId(await OpenLobby(host, slots: 2));
         var a = await NewPlayer();
         var b = await NewPlayer();
-        (await a.Client.PostAsJsonAsync($"{Lobbies}/{lobby}/requests", new { role_key = "controller" })).StatusCode.Should().Be(HttpStatusCode.Created);
+        (await Error(await a.Client.PostAsJsonAsync($"{Lobbies}/{lobby}/requests", new { area = "europe" }))).Should().Be("LOBBY_NOT_FOUND", "a player from another area can't join");
+        (await a.Client.PostAsJsonAsync($"{Lobbies}/{lobby}/requests", new { role_key = "controller", area = "south-asia" })).StatusCode.Should().Be(HttpStatusCode.Created);
         (await Error(await a.Client.PostAsJsonAsync($"{Lobbies}/{lobby}/requests", new { }))).Should().Be("ALREADY_REQUESTED");
         (await b.Client.PostAsJsonAsync($"{Lobbies}/{lobby}/requests", new { })).StatusCode.Should().Be(HttpStatusCode.Created);
         (await Scalar<int>("SELECT count(*)::int FROM public.notifications WHERE user_id = @id AND type::text = 'squad_up_lobby_request'", new { id = host.Id }))

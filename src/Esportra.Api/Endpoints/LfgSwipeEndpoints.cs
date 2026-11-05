@@ -52,8 +52,10 @@ public static class LfgSwipeEndpoints
 
         using var conn = db.CreateConnection();
         var player = await SquadUpEligibility.LoadAsync(conn, userId);
-        var (filters, filterError) = SquadUpEligibility.Normalise(req.Preferences, player.Country);
+        var (filters, filterError) = SquadUpEligibility.Normalise(req.Preferences);
         if (filters is null) return Results.BadRequest(new { error = filterError });
+        var (note, noteError) = SquadUpEligibility.NormaliseNote(req.Note);
+        if (noteError is not null) return Results.BadRequest(new { error = noteError });
         var refused = await SquadUpEligibility.CheckAsync(conn, userId, player, filters);
         if (refused is not null) return refused;
 
@@ -71,16 +73,16 @@ public static class LfgSwipeEndpoints
         var session = await conn.QuerySingleAsync<LfgSwipeSessionDto>(
             """
             INSERT INTO public.lfg_swipe_sessions
-                (user_id, game_slug, region, competitive_tier, mic_on, slots_needed, mode, country_code, wanted_countries, min_tier, max_tier)
-            VALUES (@userId, @game, @region, @tier, @micOn, @slots, @mode, @country, @countries, @minTier, @maxTier)
+                (user_id, game_slug, region, competitive_tier, mic_on, slots_needed, mode, country_code, area, note, min_tier, max_tier)
+            VALUES (@userId, @game, @region, @tier, @micOn, @slots, @mode, @country, @area, @note, @minTier, @maxTier)
             ON CONFLICT (user_id, game_slug) DO UPDATE SET
                 mic_on = EXCLUDED.mic_on, slots_needed = EXCLUDED.slots_needed,
                 competitive_tier = EXCLUDED.competitive_tier, region = EXCLUDED.region, mode = EXCLUDED.mode,
-                country_code = EXCLUDED.country_code, wanted_countries = EXCLUDED.wanted_countries,
+                country_code = EXCLUDED.country_code, area = EXCLUDED.area, note = EXCLUDED.note,
                 min_tier = EXCLUDED.min_tier, max_tier = EXCLUDED.max_tier,
                 last_heartbeat = now(), last_activity_at = now()
             RETURNING id, game_slug, region, competitive_tier, mic_on, slots_needed, started_at, last_heartbeat,
-                      mode, country_code, wanted_countries, min_tier, max_tier
+                      mode, country_code, area, note, min_tier, max_tier
             """, new
             {
                 userId,
@@ -91,7 +93,8 @@ public static class LfgSwipeEndpoints
                 slots = req.SlotsNeeded,
                 mode = filters.Mode,
                 country = player.Country,
-                countries = filters.WantedCountries,
+                area = filters.Area,
+                note,
                 minTier = filters.MinTier,
                 maxTier = filters.MaxTier,
             }, tx);
@@ -253,10 +256,11 @@ public sealed record StartSwipeSessionRequest(
     [property: JsonPropertyName("slots_needed")] int SlotsNeeded,
     [property: JsonPropertyName("game")] string? Game = null,
     [property: JsonPropertyName("mode")] string? Mode = null,
-    [property: JsonPropertyName("wanted_countries")] string[]? WantedCountries = null,
+    [property: JsonPropertyName("area")] string? Area = null,
     [property: JsonPropertyName("min_tier")] int? MinTier = null,
-    [property: JsonPropertyName("max_tier")] int? MaxTier = null)
+    [property: JsonPropertyName("max_tier")] int? MaxTier = null,
+    [property: JsonPropertyName("note")] string? Note = null)
 {
     [JsonIgnore]
-    public SquadUpPreferences Preferences => new(Game, Mode, WantedCountries, MinTier, MaxTier);
+    public SquadUpPreferences Preferences => new(Game, Mode, Area, MinTier, MaxTier);
 }

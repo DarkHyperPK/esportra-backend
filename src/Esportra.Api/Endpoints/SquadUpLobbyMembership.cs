@@ -9,7 +9,10 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
-public sealed record LobbyJoinRequest([property: JsonPropertyName("role_key")] string? RoleKey = null);
+/// <param name="Area">Where the player lives; when omitted, the lobby's own area is assumed (the board already filtered by it).</param>
+public sealed record LobbyJoinRequest(
+    [property: JsonPropertyName("role_key")] string? RoleKey = null,
+    [property: JsonPropertyName("area")] string? Area = null);
 
 /// <summary>
 /// Lobby membership. Every change to a lobby runs under one advisory lock per lobby, so the last slot can't be over-filled.
@@ -32,8 +35,7 @@ internal static class SquadUpLobbyMembership
         public int OpenSlots { get; init; }
         public Guid? ConversationId { get; init; }
         public string Region { get; init; } = "";
-        public string CountryCode { get; init; } = "";
-        public string[] WantedCountries { get; init; } = [];
+        public string? Area { get; init; }
         public int? CompetitiveTier { get; init; }
         public int? MinTier { get; init; }
         public int? MaxTier { get; init; }
@@ -56,7 +58,7 @@ internal static class SquadUpLobbyMembership
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))", new { key = $"squad-up-lobby:{lobbyId}" }, tx);
         var lobby = await conn.QuerySingleOrDefaultAsync<LobbyRow>(
             """
-            SELECT id, host_id, title, mode, status, open_slots, conversation_id, region, country_code, wanted_countries,
+            SELECT id, host_id, title, mode, status, open_slots, conversation_id, region, area,
                    competitive_tier, min_tier, max_tier, game_slug
             FROM public.squad_up_lobbies WHERE id = @lobbyId FOR UPDATE
             """, new { lobbyId }, tx);
@@ -67,6 +69,8 @@ internal static class SquadUpLobbyMembership
         Guid id, [FromBody] LobbyJoinRequest? req, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub)
     {
         if (ctx.Items["UserContext"] is not UserContext me) return Results.Unauthorized();
+        var area = req?.Area?.Trim().ToLowerInvariant();
+        if (area is not null && !SquadUpEligibility.Areas.Contains(area)) return Results.BadRequest(new { error = "INVALID_AREA" });
         using var conn = db.CreateConnection();
         var player = await SquadUpEligibility.LoadAsync(conn, me.UserIdGuid);
         var (tx, lobby) = await LockAsync(conn, id);
@@ -74,16 +78,16 @@ internal static class SquadUpLobbyMembership
         {
             if (lobby is null || lobby.HostId == me.UserIdGuid) return Results.NotFound(new { error = "LOBBY_NOT_FOUND" });
             var refused = await SquadUpEligibility.CheckAsync(conn, me.UserIdGuid, player,
-                new SquadUpFilters(lobby.GameSlug, lobby.Mode, [lobby.CountryCode], null, null));
+                new SquadUpFilters(lobby.GameSlug, lobby.Mode, lobby.Area ?? "", null, null));
             if (refused is not null) return refused;
             var visible = await conn.ExecuteScalarAsync<bool>(
                 $"""
                 SELECT EXISTS (SELECT 1 FROM public.squad_up_lobbies l
-                               CROSS JOIN (SELECT @game::text AS game_slug, @mode::text AS mode, @region::text AS region, @country::text AS country_code,
-                                                  ARRAY[]::text[] AS wanted_countries, @tier::int AS competitive_tier, NULL::int AS min_tier, NULL::int AS max_tier) me
+                               CROSS JOIN (SELECT @game::text AS game_slug, @mode::text AS mode, @region::text AS region, @area::text AS area,
+                                                  @tier::int AS competitive_tier, NULL::int AS min_tier, NULL::int AS max_tier) me
                                WHERE l.id = @id AND {SquadUpLobbySql.Open("l")} AND {LfgSwipeSql.Accepts("l", "me")}
                                  AND {LfgSwipeSql.NotBlocked("@myId", "l.host_id")})
-                """, new { id, myId = me.UserIdGuid, game = lobby.GameSlug, mode = lobby.Mode, region = player.Region, country = player.Country, tier = player.Tier }, tx);
+                """, new { id, myId = me.UserIdGuid, game = lobby.GameSlug, mode = lobby.Mode, region = player.Region, area = area ?? lobby.Area, tier = player.Tier }, tx);
             if (!visible) return Results.NotFound(new { error = "LOBBY_NOT_FOUND" });
             if (await AcceptedAsync(conn, tx, id) >= lobby.OpenSlots) return Results.Conflict(new { error = "LOBBY_FULL" });
             var existing = await conn.QuerySingleOrDefaultAsync<string?>(

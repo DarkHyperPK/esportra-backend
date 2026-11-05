@@ -16,15 +16,15 @@ internal static class LfgSwipeSql
         $"({alias}.ended_at IS NULL AND {alias}.last_heartbeat > now() - interval '3 minutes' AND {alias}.last_activity_at > now() - interval '10 minutes')";
 
     /// <summary>
-    /// "a would accept b". Both aliases expose game_slug, mode, region (Riot shard), country_code, wanted_countries,
-    /// competitive_tier, min_tier and max_tier (sessions, lobbies, or a built "me" row).
-    /// Same game, mode and shard (players on different shards cannot party); b's country is one a wants;
+    /// "a would accept b". Both aliases expose game_slug, mode, region (Riot shard), area, competitive_tier,
+    /// min_tier and max_tier (sessions, lobbies, or a built "me" row).
+    /// Same game, mode and shard (players on different shards cannot party); both live in the same area;
     /// for Competitive, b's tier sits in a's range (default ±4 tiers around a's own tier).
     /// </summary>
     public static string Accepts(string a, string b) =>
         $"""
         ({a}.game_slug = {b}.game_slug AND {a}.mode = {b}.mode AND {a}.region = {b}.region
-         AND {b}.country_code = ANY({a}.wanted_countries)
+         AND {a}.area = {b}.area
          AND ({a}.mode <> 'competitive'
               OR {b}.competitive_tier BETWEEN COALESCE({a}.min_tier, {a}.competitive_tier - {DefaultTierBand})
                                           AND COALESCE({a}.max_tier, {a}.competitive_tier + {DefaultTierBand})))
@@ -105,15 +105,15 @@ internal static class LfgSwipeSql
         $"""
         WITH {ActiveVersionCte},
         me AS (
-            SELECT s.id, s.game_slug, s.mode, s.region, s.country_code, s.wanted_countries,
+            SELECT s.id, s.game_slug, s.mode, s.region, s.area,
                    s.competitive_tier, s.min_tier, s.max_tier,
                    {TopRoles("mypgs")} AS roles
             FROM public.lfg_swipe_sessions s
             LEFT JOIN public.player_game_stats mypgs ON mypgs.user_id = s.user_id AND mypgs.game_slug = s.game_slug
             WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {Active("s")}
         )
-        SELECT s.user_id, s.mic_on, s.slots_needed, s.mode, s.country_code,
-               p.username, p.avatar_seed, p.avatar_url, p.avatar_style,
+        SELECT s.user_id, s.mic_on, s.slots_needed, s.mode, s.country_code, s.area, s.note,
+               p.username, p.avatar_seed, p.avatar_url, p.avatar_style, p.banner_url AS profile_banner_url, pgs.player_card_id,
                pgs.competitive_tier, pgs.competitive_tier_name, rt.icon_url AS competitive_tier_icon_url,
                pgs.win_rate, pgs.kd_ratio, {HsPct} AS hs_pct, COALESCE(pgs.matches_analyzed, 0) AS matches_analyzed,
                {PopularAgents} AS popular_agents,

@@ -118,7 +118,9 @@ public static class SquadUpReportEndpoints
             """
             SELECT jsonb_build_object('username', p.username,
                        'riot_id', CASE WHEN ra.game_name IS NULL THEN NULL ELSE ra.game_name || '#' || COALESCE(ra.tag_line, '') END,
-                       'region', ra.region, 'tier', pgs.competitive_tier, 'tier_name', pgs.competitive_tier_name)::text
+                       'region', ra.region, 'tier', pgs.competitive_tier, 'tier_name', pgs.competitive_tier_name,
+                       -- The card note they showed, since a note itself can be what is reported.
+                       'note', (SELECT s.note FROM public.lfg_swipe_sessions s WHERE s.user_id = p.id AND s.game_slug = 'valorant'))::text
             FROM public.profiles p
             LEFT JOIN public.riot_accounts ra ON ra.user_id = p.id
             LEFT JOIN public.player_game_stats pgs ON pgs.user_id = p.id AND pgs.game_slug = 'valorant'

@@ -51,7 +51,7 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
     }
 
     private static Task<HttpResponseMessage> Start(Player p, int slots = 1, bool mic = true) =>
-        p.Client.PostAsJsonAsync($"{Base}/session", new { mic_on = mic, slots_needed = slots });
+        p.Client.PostAsJsonAsync($"{Base}/session", new { mic_on = mic, slots_needed = slots, area = "south-asia" });
 
     private async Task<Player> Queued(string? region = OwnRegion, int? tier = 15, string agents = "[]", int slots = 1)
     {
