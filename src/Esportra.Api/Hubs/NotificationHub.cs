@@ -98,4 +98,10 @@ public static class NotificationHubEvents
 
     /// <summary>Admin revoked user's session - client must log out immediately.</summary>
     public const string ForceLogout = "ForceLogout";
+
+    /// <summary>
+    /// A compatible player joined (or updated) a Squad Up session; recipients should refresh their card deck.
+    /// No payload — the client re-fetches GET /api/competitive/lfg/swipe/cards to get the updated pool.
+    /// </summary>
+    public const string SquadUpPoolUpdated = "SquadUpPoolUpdated";
 }

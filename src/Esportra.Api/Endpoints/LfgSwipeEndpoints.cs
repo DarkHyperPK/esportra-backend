@@ -44,7 +44,8 @@ public static class LfgSwipeEndpoints
     // ── POST session ─────────────────────────────────────────────────────────
 
     private static async Task<IResult> StartSessionAsync(
-        [FromBody] StartSwipeSessionRequest? req, HttpContext ctx, IDbConnectionFactory db)
+        [FromBody] StartSwipeSessionRequest? req, HttpContext ctx, IDbConnectionFactory db,
+        IHubContext<NotificationHub> notifHub)
     {
         if (CallerId(ctx) is not { } userId) return Results.Unauthorized();
         if (req is null || req.SlotsNeeded is < 1 or > 4)
@@ -102,6 +103,7 @@ public static class LfgSwipeEndpoints
             }, tx);
         if (!alreadyLive) await SquadUpStats.BumpAsync(conn, session.Region, SquadUpCounter.SessionsStarted, tx);
         tx.Commit();
+        await PushPoolUpdatedAsync(notifHub, conn, userId, session.GameSlug, session.Region, sessionAreas);
         return Results.Ok(session);
     }
 
@@ -251,6 +253,36 @@ public static class LfgSwipeEndpoints
         await conn.ExecuteScalarAsync<bool>(
             $"SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_sessions s WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")})",
             new { myId });
+
+    /// <summary>
+    /// After a new/updated session commits, notify all currently-active compatible peers so their
+    /// card decks refresh without a manual reload. Filters by game+region+areas overlap (tier is
+    /// not checked here — the Cards query handles that). Fire-after-commit; non-critical.
+    /// </summary>
+    private static async Task PushPoolUpdatedAsync(
+        IHubContext<NotificationHub> hub, IDbConnection conn, Guid newUserId, string game, string region, string[] areas)
+    {
+        try
+        {
+            var peers = (await conn.QueryAsync<Guid>(
+                $"""
+                SELECT DISTINCT s.user_id
+                FROM public.lfg_swipe_sessions s
+                WHERE s.game_slug = @game AND s.region = @region AND s.areas && @areas::text[]
+                  AND s.user_id <> @newUserId
+                  AND {LfgSwipeSql.Active("s")}
+                """, new { game, region, areas, newUserId })).ToList();
+            foreach (var peerId in peers)
+            {
+                await hub.Clients.Group(NotificationHub.UserGroup(peerId.ToString()))
+                    .SendAsync(NotificationHubEvents.SquadUpPoolUpdated);
+            }
+        }
+        catch
+        {
+            // Non-critical: peers will get the new card on their next 15-second empty-deck poll.
+        }
+    }
 }
 
 public sealed record StartSwipeSessionRequest(
