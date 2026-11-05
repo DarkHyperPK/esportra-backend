@@ -70,19 +70,20 @@ public static class LfgSwipeEndpoints
         var alreadyLive = await conn.ExecuteScalarAsync<bool>(
             $"SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_sessions s WHERE s.user_id = @userId AND s.game_slug = @game AND {LfgSwipeSql.Active("s")})",
             new { userId, game = filters.Game }, tx);
+        var sessionAreas = filters.Areas ?? [filters.Area];
         var session = await conn.QuerySingleAsync<LfgSwipeSessionDto>(
             """
             INSERT INTO public.lfg_swipe_sessions
-                (user_id, game_slug, region, competitive_tier, mic_on, slots_needed, mode, country_code, area, note, min_tier, max_tier)
-            VALUES (@userId, @game, @region, @tier, @micOn, @slots, @mode, @country, @area, @note, @minTier, @maxTier)
+                (user_id, game_slug, region, competitive_tier, mic_on, slots_needed, mode, country_code, area, areas, note, min_tier, max_tier)
+            VALUES (@userId, @game, @region, @tier, @micOn, @slots, @mode, @country, @area, @areas::text[], @note, @minTier, @maxTier)
             ON CONFLICT (user_id, game_slug) DO UPDATE SET
                 mic_on = EXCLUDED.mic_on, slots_needed = EXCLUDED.slots_needed,
                 competitive_tier = EXCLUDED.competitive_tier, region = EXCLUDED.region, mode = EXCLUDED.mode,
-                country_code = EXCLUDED.country_code, area = EXCLUDED.area, note = EXCLUDED.note,
+                country_code = EXCLUDED.country_code, area = EXCLUDED.area, areas = EXCLUDED.areas, note = EXCLUDED.note,
                 min_tier = EXCLUDED.min_tier, max_tier = EXCLUDED.max_tier,
                 last_heartbeat = now(), last_activity_at = now()
             RETURNING id, game_slug, region, competitive_tier, mic_on, slots_needed, started_at, last_heartbeat,
-                      mode, country_code, area, note, min_tier, max_tier
+                      mode, country_code, area, areas, note, min_tier, max_tier
             """, new
             {
                 userId,
@@ -94,6 +95,7 @@ public static class LfgSwipeEndpoints
                 mode = filters.Mode,
                 country = player.Country,
                 area = filters.Area,
+                areas = sessionAreas,
                 note,
                 minTier = filters.MinTier,
                 maxTier = filters.MaxTier,
@@ -259,8 +261,9 @@ public sealed record StartSwipeSessionRequest(
     [property: JsonPropertyName("area")] string? Area = null,
     [property: JsonPropertyName("min_tier")] int? MinTier = null,
     [property: JsonPropertyName("max_tier")] int? MaxTier = null,
-    [property: JsonPropertyName("note")] string? Note = null)
+    [property: JsonPropertyName("note")] string? Note = null,
+    [property: JsonPropertyName("areas")] string[]? Areas = null)
 {
     [JsonIgnore]
-    public SquadUpPreferences Preferences => new(Game, Mode, Area, MinTier, MaxTier);
+    public SquadUpPreferences Preferences => new(Game, Mode, Area, MinTier, MaxTier, Areas);
 }

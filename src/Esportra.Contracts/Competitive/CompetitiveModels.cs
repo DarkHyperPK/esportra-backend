@@ -468,6 +468,7 @@ public sealed record LfgSwipeSessionDto
     public string Mode { get; init; } = "competitive";
     public string? CountryCode { get; init; }
     public string? Area { get; init; }
+    public string[]? Areas { get; init; }
     public string? Note { get; init; }
     public int? MinTier { get; init; }
     public int? MaxTier { get; init; }

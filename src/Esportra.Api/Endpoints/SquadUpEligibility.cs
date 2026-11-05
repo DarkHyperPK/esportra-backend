@@ -10,13 +10,14 @@ public sealed record SquadUpPreferences(
     [property: JsonPropertyName("mode")] string? Mode = null,
     [property: JsonPropertyName("area")] string? Area = null,
     [property: JsonPropertyName("min_tier")] int? MinTier = null,
-    [property: JsonPropertyName("max_tier")] int? MaxTier = null);
+    [property: JsonPropertyName("max_tier")] int? MaxTier = null,
+    [property: JsonPropertyName("areas")] string[]? Areas = null);
 
 /// <summary>The player's facts that matching relies on, all read from the server, never from the client.</summary>
 internal sealed record SquadUpPlayer(bool Linked, int? Tier, string? Region, string? Country);
 
 /// <summary>Validated preferences, normalised: game, mode and area known.</summary>
-internal sealed record SquadUpFilters(string Game, string Mode, string Area, int? MinTier, int? MaxTier);
+internal sealed record SquadUpFilters(string Game, string Mode, string Area, int? MinTier, int? MaxTier, string[]? Areas = null);
 
 internal static class SquadUpEligibility
 {
@@ -54,13 +55,22 @@ internal static class SquadUpEligibility
         if (!SupportedGames.Contains(game)) return (null, "UNSUPPORTED_GAME");
         var mode = (prefs?.Mode ?? "competitive").Trim().ToLowerInvariant();
         if (!Modes.Contains(mode)) return (null, "INVALID_MODE");
-        var area = (prefs?.Area ?? "").Trim().ToLowerInvariant();
-        if (!Areas.Contains(area)) return (null, "INVALID_AREA");
         if (prefs?.MinTier is { } min && (min < MinValorantTier || min > MaxValorantTier)) return (null, "INVALID_RANK_RANGE");
         if (prefs?.MaxTier is { } max && (max < MinValorantTier || max > MaxValorantTier)) return (null, "INVALID_RANK_RANGE");
         if (prefs?.MinTier > prefs?.MaxTier) return (null, "INVALID_RANK_RANGE");
-        // Rank range only means something in Competitive.
         var competitive = mode == "competitive";
+
+        // Multi-area path (swipe sessions): validate the whole array.
+        if (prefs?.Areas is { Length: > 0 } rawAreas)
+        {
+            var normAreas = rawAreas.Select(a => a.Trim().ToLowerInvariant()).Distinct().ToArray();
+            if (normAreas.Any(a => !Areas.Contains(a))) return (null, "INVALID_AREA");
+            return (new SquadUpFilters(game, mode, normAreas[0], competitive ? prefs?.MinTier : null, competitive ? prefs?.MaxTier : null, normAreas), null);
+        }
+
+        // Single-area path (lobbies and legacy clients).
+        var area = (prefs?.Area ?? "").Trim().ToLowerInvariant();
+        if (!Areas.Contains(area)) return (null, "INVALID_AREA");
         return (new SquadUpFilters(game, mode, area, competitive ? prefs?.MinTier : null, competitive ? prefs?.MaxTier : null), null);
     }
 

@@ -24,7 +24,7 @@ internal static class LfgSwipeSql
     public static string Accepts(string a, string b) =>
         $"""
         ({a}.game_slug = {b}.game_slug AND {a}.mode = {b}.mode AND {a}.region = {b}.region
-         AND {a}.area = {b}.area
+         AND {a}.areas && {b}.areas
          AND ({a}.mode <> 'competitive'
               OR {b}.competitive_tier BETWEEN COALESCE({a}.min_tier, {a}.competitive_tier - {DefaultTierBand})
                                           AND COALESCE({a}.max_tier, {a}.competitive_tier + {DefaultTierBand})))
@@ -105,7 +105,7 @@ internal static class LfgSwipeSql
         $"""
         WITH {ActiveVersionCte},
         me AS (
-            SELECT s.id, s.game_slug, s.mode, s.region, s.area,
+            SELECT s.id, s.game_slug, s.mode, s.region, s.area, s.areas,
                    s.competitive_tier, s.min_tier, s.max_tier,
                    {TopRoles("mypgs")} AS roles
             FROM public.lfg_swipe_sessions s
