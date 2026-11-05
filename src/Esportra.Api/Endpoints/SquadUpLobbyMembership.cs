@@ -196,6 +196,15 @@ internal static class SquadUpLobbyMembership
     private static async Task<IResult> LeaveAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub)
     {
         if (ctx.Items["UserContext"] is not UserContext me) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var closed = await conn.ExecuteAsync(
+            "UPDATE public.squad_up_lobbies SET status = 'closed', closed_at = now() WHERE id = @id AND host_id = @hostId AND status IN ('open', 'full')",
+            new { id, hostId = me.UserIdGuid });
+        if (closed > 0)
+        {
+            await PushUpdatedAsync(conn, hub, id);
+            return Results.NoContent();
+        }
         return await RemoveAsync(id, me.UserIdGuid, "left", null, db, hub);
     }
 
