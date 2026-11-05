@@ -115,7 +115,6 @@ public static class ScrimAdminEndpoints
                 ss.game_slug, ss.scheduled_at,
                 ss.best_of, ss.team1_score, ss.team2_score,
                 ss.status                           AS session_status,
-                ss.match_format,
                 t1.name                             AS team1_name,
                 t2.name                             AS team2_name,
                 pu.username                         AS resolved_by_username
@@ -310,7 +309,7 @@ public static class ScrimAdminEndpoints
         DateTime? ResolvedAt, DateTime CreatedAt, int? GameNumber,
         string? RaisedByTeamName,
         Guid Team1Id, Guid Team2Id, string? GameSlug, DateTime? ScheduledAt,
-        int? BestOf, int Team1Score, int Team2Score, string SessionStatus, string? MatchFormat,
+        int? BestOf, int Team1Score, int Team2Score, string SessionStatus,
         string? Team1Name, string? Team2Name, string? ResolvedByUsername);
 
     private sealed record ScrimDisputeGameRow(
