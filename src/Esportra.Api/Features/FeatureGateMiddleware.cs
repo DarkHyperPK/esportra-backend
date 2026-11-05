@@ -29,7 +29,7 @@ public sealed class FeatureGateMiddleware(
         // PROJ-065: Competitive Phase 1 — off by default (beta). lfg is nested under competitive/
         // so competitive_profiles check also covers lfg endpoints; add explicit lfg rule for clarity.
         ("competitive_profiles", new Regex(@"^/api/competitive/profiles", RegexOptions.Compiled)),
-        ("lfg_queue", new Regex(@"^/api/competitive/lfg/swipe", RegexOptions.Compiled)),
+        ("squad_up", new Regex(@"^/api/competitive/lfg/swipe", RegexOptions.Compiled)),
         ("lfg", new Regex(@"^/api/competitive/(lfg|availability)", RegexOptions.Compiled)),
         // PROJ-066: Competitive Phase 2 — recruitment off by default.
         ("recruitment", new Regex(@"^/api/recruitment/", RegexOptions.Compiled)),

@@ -11,9 +11,9 @@ using Esportra.Api.Hubs;
 namespace Esportra.Api.Endpoints;
 
 /// <summary>
-/// LFG Queue Now — live swipe matching (Valorant).
-/// POST   /api/competitive/lfg/swipe/session             — enter the queue
-/// DELETE /api/competitive/lfg/swipe/session             — leave the queue (returns session stats)
+/// Squad Up — live swipe matching (Valorant).
+/// POST   /api/competitive/lfg/swipe/session             — start a Squad Up session
+/// DELETE /api/competitive/lfg/swipe/session             — end the session (returns session stats)
 /// POST   /api/competitive/lfg/swipe/session/heartbeat   — keep presence alive
 /// GET    /api/competitive/lfg/swipe/session/stats       — swipes / matches / duration
 /// GET    /api/competitive/lfg/swipe/cards               — next cards
@@ -69,6 +69,9 @@ public static class LfgSwipeEndpoints
         await conn.ExecuteAsync(
             $"DELETE FROM public.lfg_swipe_sessions WHERE user_id = @userId AND game_slug = 'valorant' AND NOT {LfgSwipeSql.Active("lfg_swipe_sessions")}",
             new { userId }, tx);
+        var alreadyLive = await conn.ExecuteScalarAsync<bool>(
+            $"SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_sessions s WHERE s.user_id = @userId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")})",
+            new { userId }, tx);
         var session = await conn.QuerySingleAsync<LfgSwipeSessionDto>(
             """
             INSERT INTO public.lfg_swipe_sessions (user_id, game_slug, region, competitive_tier, mic_on, slots_needed)
@@ -78,6 +81,7 @@ public static class LfgSwipeEndpoints
                 competitive_tier = EXCLUDED.competitive_tier, region = EXCLUDED.region, last_heartbeat = now()
             RETURNING id, game_slug, region, competitive_tier, mic_on, slots_needed, started_at, last_heartbeat
             """, new { userId, region = profile.Region, tier = profile.Tier, micOn = req.MicOn, slots = req.SlotsNeeded }, tx);
+        if (!alreadyLive) await SquadUpStats.BumpAsync(conn, session.Region, SquadUpCounter.SessionsStarted, tx);
         tx.Commit();
         return Results.Ok(session);
     }
@@ -144,14 +148,7 @@ public static class LfgSwipeEndpoints
     }
 
     private static Task<int> CountPendingLikesAsync(IDbConnection conn, Guid myId, Guid mySession) =>
-        conn.ExecuteScalarAsync<int>(
-            $"""
-            SELECT count(*)::int FROM public.lfg_swipe_actions a
-            JOIN public.lfg_swipe_sessions s ON s.id = a.session_id AND {LfgSwipeSql.Active("s")}
-            WHERE a.direction = 'like' AND a.target_user_id = @myId
-              AND NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mine
-                              WHERE mine.session_id = @mySession AND mine.target_user_id = s.user_id)
-            """, new { myId, mySession });
+        conn.ExecuteScalarAsync<int>(LfgSwipeSql.PendingLikes(), new { myId, mySession });
 
     private static async Task<IResult> GetMatchesAsync(HttpContext ctx, IDbConnectionFactory db)
     {
@@ -167,17 +164,19 @@ public static class LfgSwipeEndpoints
         if (CallerId(ctx) is not { } myId) return Results.Unauthorized();
         if (targetUserId == myId) return Results.BadRequest(new { error = "SELF_SWIPE" });
         using var conn = db.CreateConnection();
-        var sessionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            $"SELECT id FROM public.lfg_swipe_sessions s WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")}",
+        var session = await conn.QuerySingleOrDefaultAsync<(Guid Id, string Region)?>(
+            $"SELECT id, region FROM public.lfg_swipe_sessions s WHERE s.user_id = @myId AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")}",
             new { myId });
-        if (sessionId is null) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
+        if (session is not { } current) return Results.NotFound(new { error = "NO_ACTIVE_SESSION" });
+        var sessionId = current.Id;
         // Selecting from profiles means an unknown id is a no-op rather than an FK error.
-        await conn.ExecuteAsync(
+        var recorded = await conn.ExecuteAsync(
             """
             INSERT INTO public.lfg_swipe_actions (session_id, target_user_id, direction)
             SELECT @sessionId, p.id, 'pass' FROM public.profiles p WHERE p.id = @targetUserId
             ON CONFLICT (session_id, target_user_id) DO NOTHING
             """, new { sessionId, targetUserId });
+        if (recorded > 0) await SquadUpStats.BumpAsync(conn, current.Region, SquadUpCounter.SwipesLeft);
         return Results.NoContent();
     }
 
@@ -194,6 +193,7 @@ public static class LfgSwipeEndpoints
         var outcome = await LfgSwipeMatchmaker.SwipeRightAsync(conn, myId, targetUserId);
         if (outcome is null) return Results.NotFound(new { error = "TARGET_NOT_ACTIVE" });
         await LfgSwipeMatchmaker.PushAsync(notifHub, outcome.Pushes);
+        await LfgSwipeMatchmaker.PushLikeAsync(notifHub, outcome.LikePush);
         return Results.Ok(outcome.Result);
     }
 

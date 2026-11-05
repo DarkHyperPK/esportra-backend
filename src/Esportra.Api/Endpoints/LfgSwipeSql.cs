@@ -1,6 +1,6 @@
 namespace Esportra.Api.Endpoints;
 
-/// <summary>SQL fragments shared by the Queue Now (LFG swipe) endpoints.</summary>
+/// <summary>SQL fragments shared by the Squad Up (LFG swipe) endpoints.</summary>
 internal static class LfgSwipeSql
 {
     public const string GameSlug = "valorant";
@@ -56,6 +56,16 @@ internal static class LfgSwipeSql
          AND ABS(ts.competitive_tier - me.competitive_tier) <= 8 AND {Active("ts")}
         JOIN public.profiles p ON p.id = ts.user_id AND COALESCE(p.is_suspended, false) = false
         WHERE me.user_id = @myId AND me.game_slug = 'valorant' AND {Active("me")}
+        """;
+
+    /// <summary>Unseen likes for @myId: likers whose session is live and whom @mySession has not acted on.</summary>
+    public static string PendingLikes() =>
+        $"""
+        SELECT count(*)::int FROM public.lfg_swipe_actions a
+        JOIN public.lfg_swipe_sessions s ON s.id = a.session_id AND {Active("s")}
+        WHERE a.direction = 'like' AND a.target_user_id = @myId
+          AND NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mine
+                          WHERE mine.session_id = @mySession AND mine.target_user_id = s.user_id)
         """;
 
     public static string Cards() =>

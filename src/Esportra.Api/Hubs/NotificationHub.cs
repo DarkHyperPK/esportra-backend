@@ -78,6 +78,9 @@ public static class NotificationHubEvents
     /// <summary>A new notification was created for this user.</summary>
     public const string NewNotification = "NewNotification";
 
+    /// <summary>Someone liked this user in Squad Up; payload is the unseen-likes count only.</summary>
+    public const string SquadUpLike = "SquadUpLike";
+
     /// <summary>A specific notification was marked as read (from another tab).</summary>
     public const string NotificationRead = "NotificationRead";
 

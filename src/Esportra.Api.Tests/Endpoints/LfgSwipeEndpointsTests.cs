@@ -14,7 +14,7 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
 {
     private const string Base = "/api/competitive/lfg/swipe";
 
-    public async Task InitializeAsync() => await factory.Seeder.SeedFeatureFlagAsync("lfg_queue", enabled: true);
+    public async Task InitializeAsync() => await factory.Seeder.SeedFeatureFlagAsync("squad_up", enabled: true);
     public Task DisposeAsync() => Task.CompletedTask;
 
     // ── helpers ───────────────────────────────────────────────────────────────

@@ -8,12 +8,14 @@ namespace Esportra.Api.Endpoints;
 
 internal sealed record SwipePush(Guid UserId, object Payload);
 
-internal sealed record SwipeOutcome(LfgSwipeResultDto Result, IReadOnlyList<SwipePush> Pushes);
+internal sealed record LikePush(Guid UserId, int PendingLikes);
+
+internal sealed record SwipeOutcome(LfgSwipeResultDto Result, IReadOnlyList<SwipePush> Pushes, LikePush? LikePush = null);
 
 /// <summary>Right-swipe transaction: records the like and, when mutual, creates the match exactly once.</summary>
 internal static class LfgSwipeMatchmaker
 {
-    private sealed record LockedSession(Guid Id, Guid UserId);
+    private sealed record LockedSession(Guid Id, Guid UserId, string Region);
 
     /// <returns>null when the target is not in the caller's live pool.</returns>
     public static async Task<SwipeOutcome?> SwipeRightAsync(IDbConnection conn, Guid myId, Guid targetId)
@@ -28,7 +30,7 @@ internal static class LfgSwipeMatchmaker
         // Row locks in id order so concurrent swipes touching the same sessions cannot deadlock.
         var sessions = (await conn.QueryAsync<LockedSession>(
             $"""
-            SELECT s.id, s.user_id FROM public.lfg_swipe_sessions s
+            SELECT s.id, s.user_id, s.region FROM public.lfg_swipe_sessions s
             WHERE s.user_id IN (@myId, @targetId) AND s.game_slug = 'valorant' AND {LfgSwipeSql.Active("s")}
             ORDER BY s.id FOR UPDATE
             """, new { myId, targetId }, tx)).ToList();
@@ -38,11 +40,13 @@ internal static class LfgSwipeMatchmaker
 
         var mine = sessions.Single(s => s.UserId == myId).Id;
         var theirs = sessions.Single(s => s.UserId == targetId).Id;
-        await conn.ExecuteAsync(
+        var region = sessions.Single(s => s.UserId == myId).Region;
+        var newLike = await conn.ExecuteAsync(
             """
             INSERT INTO public.lfg_swipe_actions (session_id, target_user_id, direction)
             VALUES (@mine, @targetId, 'like') ON CONFLICT (session_id, target_user_id) DO NOTHING
-            """, new { mine, targetId }, tx);
+            """, new { mine, targetId }, tx) > 0;
+        if (newLike) await SquadUpStats.BumpAsync(conn, region, SquadUpCounter.SwipesRight, tx);
         var mutual = await conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mineAct
@@ -52,8 +56,12 @@ internal static class LfgSwipeMatchmaker
             """, new { mine, theirs, myId, targetId }, tx);
         if (!mutual)
         {
+            // Tell the liked player something happened without revealing who (identities stay hidden until a match).
+            var pending = newLike
+                ? await conn.ExecuteScalarAsync<int>(LfgSwipeSql.PendingLikes(), new { myId = targetId, mySession = theirs }, tx)
+                : 0;
             tx.Commit();
-            return new SwipeOutcome(new LfgSwipeResultDto(), []);
+            return new SwipeOutcome(new LfgSwipeResultDto(), [], newLike ? new LikePush(targetId, pending) : null);
         }
 
         var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -69,11 +77,11 @@ internal static class LfgSwipeMatchmaker
             tx.Commit();
             return new SwipeOutcome(new LfgSwipeResultDto { Matched = true, Match = again }, []);
         }
-        return await CreateMatchAsync(conn, tx, myId, targetId, [mine, theirs]);
+        return await CreateMatchAsync(conn, tx, myId, targetId, [mine, theirs], region);
     }
 
     private static async Task<SwipeOutcome> CreateMatchAsync(
-        IDbConnection conn, IDbTransaction tx, Guid myId, Guid targetId, Guid[] sessionIds)
+        IDbConnection conn, IDbTransaction tx, Guid myId, Guid targetId, Guid[] sessionIds, string region)
     {
         var conversationId = await FindOrCreateConversationAsync(conn, tx, myId, targetId);
         var matchId = await conn.QuerySingleAsync<Guid>(
@@ -82,6 +90,7 @@ internal static class LfgSwipeMatchmaker
             VALUES (LEAST(@myId, @targetId), GREATEST(@myId, @targetId), 'valorant', @conversationId)
             RETURNING id
             """, new { myId, targetId, conversationId }, tx);
+        await SquadUpStats.BumpAsync(conn, region, SquadUpCounter.Matches, tx);
         var remaining = (await conn.QueryAsync<(Guid UserId, int Slots)>(
             """
             UPDATE public.lfg_swipe_sessions
@@ -134,7 +143,7 @@ internal static class LfgSwipeMatchmaker
         foreach (var (uid, other) in new[] { (myId, targetId), (targetId, myId) })
         {
             var title = "It's a match!";
-            var message = $"You and {names.GetValueOrDefault(other, "a player")} want to queue together.";
+            var message = $"You and {names.GetValueOrDefault(other, "a player")} want to squad up.";
             var link = $"/inbox/{conversationId}";
             var sessionEnded = ended[uid];
             var id = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -165,6 +174,21 @@ internal static class LfgSwipeMatchmaker
             }));
         }
         return pushes;
+    }
+
+    /// <summary>Real-time "someone liked you" ping; carries only the count so identities stay hidden.</summary>
+    public static async Task PushLikeAsync(IHubContext<NotificationHub> hub, LikePush? like)
+    {
+        if (like is null) return;
+        try
+        {
+            await hub.Clients.Group(NotificationHub.UserGroup(like.UserId.ToString()))
+                .SendAsync(NotificationHubEvents.SquadUpLike, new { pendingLikes = like.PendingLikes });
+        }
+        catch
+        {
+            // Non-critical: the heartbeat reports the same count.
+        }
     }
 
     /// <summary>Real-time fan-out after commit; the persisted rows deliver on next fetch if a push fails.</summary>

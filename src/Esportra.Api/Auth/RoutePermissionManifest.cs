@@ -284,6 +284,10 @@ public static class RoutePermissionManifest
         Adm("*", "/api/admin/games/{*}",
             [Permissions.GamesView, Permissions.GamesManage]),
 
+        // Admin Squad Up (live teammate finder): stats, live sessions, force-end
+        Adm("*", "/api/admin/squad-up/{*}",
+            ["squad_up:view", "squad_up:manage"]),
+
         // Admin operations / system
         Adm("*", "/api/admin/operations/{*}",
             [Permissions.SystemSettings]),
