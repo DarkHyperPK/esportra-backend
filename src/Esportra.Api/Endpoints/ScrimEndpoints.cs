@@ -594,6 +594,17 @@ public static class ScrimEndpoints
 
         if (!await IsTeamStaffAsync(conn, req.OfferingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
+        var existingOffer = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT id FROM public.scrim_offers
+            WHERE listing_id = @listingId AND offering_team_id = @offeringTeamId
+              AND status = 'pending'::scrim_offer_status
+            LIMIT 1
+            """,
+            new { listingId = id, offeringTeamId = req.OfferingTeamId });
+        if (existingOffer is not null)
+            return Results.Conflict(new { error = "Your team already has a pending offer on this listing." });
+
         var row = await conn.QuerySingleAsync<ScrimOfferRow>(
             """
             INSERT INTO public.scrim_offers
