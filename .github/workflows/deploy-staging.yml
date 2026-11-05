@@ -46,7 +46,7 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore --runtime linux-x64 --runtime linux-x64
+        run: dotnet restore --runtime linux-x64
 
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
