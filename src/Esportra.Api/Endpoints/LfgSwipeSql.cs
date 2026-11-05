@@ -24,14 +24,30 @@ internal static class LfgSwipeSql
     public static string Accepts(string a, string b) =>
         $"""
         ({a}.game_slug = {b}.game_slug AND {a}.mode = {b}.mode AND {a}.region = {b}.region
+         AND {a}.area = {b}.area
+         AND ({a}.mode <> 'competitive'
+              OR {b}.competitive_tier BETWEEN COALESCE({a}.min_tier, {a}.competitive_tier - {DefaultTierBand})
+                                          AND COALESCE({a}.max_tier, {a}.competitive_tier + {DefaultTierBand})))
+        """;
+
+    /// <summary>Both players would accept each other. Used by Duo lobbies (single-area matching).</summary>
+    public static string Compatible(string a, string b) => $"({Accepts(a, b)} AND {Accepts(b, a)})";
+
+    /// <summary>
+    /// "a's session would accept b's session" using multi-area overlap.
+    /// Both aliases must be lfg_swipe_sessions rows (which carry the areas text[] column).
+    /// </summary>
+    public static string AcceptsSession(string a, string b) =>
+        $"""
+        ({a}.game_slug = {b}.game_slug AND {a}.mode = {b}.mode AND {a}.region = {b}.region
          AND {a}.areas && {b}.areas
          AND ({a}.mode <> 'competitive'
               OR {b}.competitive_tier BETWEEN COALESCE({a}.min_tier, {a}.competitive_tier - {DefaultTierBand})
                                           AND COALESCE({a}.max_tier, {a}.competitive_tier + {DefaultTierBand})))
         """;
 
-    /// <summary>Both players would accept each other. Used by Duo cards, likes and matching.</summary>
-    public static string Compatible(string a, string b) => $"({Accepts(a, b)} AND {Accepts(b, a)})";
+    /// <summary>Both swipe sessions are mutually compatible (multi-area). Used by Duo cards, likes and matching.</summary>
+    public static string CompatibleSessions(string a, string b) => $"({AcceptsSession(a, b)} AND {AcceptsSession(b, a)})";
 
     /// <summary>True when neither player has hidden the other (a report with "hide" creates the block).</summary>
     public static string NotBlocked(string a, string b) =>
@@ -83,7 +99,7 @@ internal static class LfgSwipeSql
         SELECT 1
         FROM public.lfg_swipe_sessions me
         JOIN public.lfg_swipe_sessions ts
-          ON ts.user_id = @targetId AND {Compatible("me", "ts")} AND {Active("ts")}
+          ON ts.user_id = @targetId AND {CompatibleSessions("me", "ts")} AND {Active("ts")}
         JOIN public.profiles p ON p.id = ts.user_id AND COALESCE(p.is_suspended, false) = false
         WHERE me.user_id = @myId AND me.game_slug = 'valorant' AND {Active("me")}
           AND {NotBlocked("me.user_id", "ts.user_id")}
@@ -94,7 +110,7 @@ internal static class LfgSwipeSql
         $"""
         SELECT count(*)::int FROM public.lfg_swipe_actions a
         JOIN public.lfg_swipe_sessions s ON s.id = a.session_id AND {Active("s")}
-        JOIN public.lfg_swipe_sessions mine_s ON mine_s.id = @mySession AND {Compatible("mine_s", "s")}
+        JOIN public.lfg_swipe_sessions mine_s ON mine_s.id = @mySession AND {CompatibleSessions("mine_s", "s")}
         WHERE a.direction = 'like' AND a.target_user_id = @myId
           AND {NotBlocked("@myId", "s.user_id")}
           AND NOT EXISTS (SELECT 1 FROM public.lfg_swipe_actions mine
@@ -124,7 +140,7 @@ internal static class LfgSwipeSql
                        WHERE liked.session_id = s.id AND liked.target_user_id = @myId AND liked.direction = 'like') AS liked_you
         FROM me
         JOIN public.lfg_swipe_sessions s
-          ON s.user_id <> @myId AND {Compatible("me", "s")} AND {Active("s")}
+          ON s.user_id <> @myId AND {CompatibleSessions("me", "s")} AND {Active("s")}
         JOIN public.profiles p ON p.id = s.user_id AND COALESCE(p.is_suspended, false) = false
         JOIN public.riot_accounts ra ON ra.user_id = s.user_id
         -- Unrated players may have no synced stats yet; they still get a card.
