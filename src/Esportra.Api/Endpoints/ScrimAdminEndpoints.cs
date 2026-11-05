@@ -135,7 +135,7 @@ public static class ScrimAdminEndpoints
             SELECT game_number, status, map_name, team1_score, team2_score, winner_slot,
                    source, screenshot_urls, notes, reported_at, confirmed_at, auto_confirmed,
                    disputed_by_team_id
-            FROM public.scrim_games
+            FROM public.scrim_session_games
             WHERE session_id = @sessionId
             ORDER BY game_number
             """,
