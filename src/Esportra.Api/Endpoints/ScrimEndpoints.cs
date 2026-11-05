@@ -229,8 +229,24 @@ public static class ScrimEndpoints
 
         var rows = await conn.QueryAsync<ScrimListingRow>(
             """
-            SELECT sl.*, t.name AS team_name
-            FROM public.scrim_listings sl JOIN public.teams t ON t.id = sl.team_id
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT sl.*, t.name AS team_name,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url    AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url    AS max_rank_icon_url
+            FROM public.scrim_listings sl
+            JOIN public.teams t ON t.id = sl.team_id
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.tier_key   = sl.min_rank_key
+               AND min_rt.game_slug  = sl.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.tier_key   = sl.max_rank_key
+               AND max_rt.game_slug  = sl.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
             WHERE sl.team_id = @teamId
             ORDER BY sl.created_at DESC LIMIT @limit OFFSET @offset
             """,
