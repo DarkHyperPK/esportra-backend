@@ -13,6 +13,12 @@ namespace Esportra.Api.Tests.Endpoints;
 public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
 {
     private const string Base = "/api/competitive/lfg/swipe";
+    private const string OwnRegion = "@own";
+
+    // The suite shares one database, so each test gets private regions: its pool holds only its own players
+    // and a limited, random card sample can never miss the player the test is looking for.
+    private readonly string region = $"t{Guid.NewGuid():N}"[..10];
+    private readonly string altRegion = $"o{Guid.NewGuid():N}"[..10];
 
     public async Task InitializeAsync() => await factory.Seeder.SeedFeatureFlagAsync("squad_up", enabled: true);
     public Task DisposeAsync() => Task.CompletedTask;
@@ -21,8 +27,9 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
 
     private sealed record Player(Guid Id, HttpClient Client);
 
-    private async Task<Player> NewPlayer(string? region = "na", int? tier = 15, string agents = "[]", bool linked = true)
+    private async Task<Player> NewPlayer(string? region = OwnRegion, int? tier = 15, string agents = "[]", bool linked = true)
     {
+        region = region == OwnRegion ? this.region : region;
         var id = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(id);
         if (linked)
@@ -44,7 +51,7 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
     private static Task<HttpResponseMessage> Start(Player p, int slots = 1, bool mic = true) =>
         p.Client.PostAsJsonAsync($"{Base}/session", new { mic_on = mic, slots_needed = slots });
 
-    private async Task<Player> Queued(string? region = "na", int? tier = 15, string agents = "[]", int slots = 1)
+    private async Task<Player> Queued(string? region = OwnRegion, int? tier = 15, string agents = "[]", int slots = 1)
     {
         var p = await NewPlayer(region, tier, agents);
         (await Start(p, slots)).StatusCode.Should().Be(HttpStatusCode.OK);
@@ -147,7 +154,7 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var me = await Queued(tier: 15);
         var near = await Queued(tier: 17);
         var far = await Queued(tier: 24);
-        var otherRegion = await Queued(region: "eu");
+        var otherRegion = await Queued(region: altRegion);
         var stale = await Queued();
         var seen = await Queued();
         var suspended = await Queued();
@@ -239,7 +246,7 @@ public sealed class LfgSwipeEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var a = await Queued();
         (await Right(a, a)).StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var farTier = await Queued(tier: 27);
-        var otherRegion = await Queued(region: "eu");
+        var otherRegion = await Queued(region: altRegion);
         var noSession = await NewPlayer();
         foreach (var target in new[] { farTier, otherRegion, noSession })
         {

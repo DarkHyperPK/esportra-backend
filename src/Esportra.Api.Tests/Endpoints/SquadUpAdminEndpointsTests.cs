@@ -14,12 +14,15 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
     private const string Swipe = "/api/competitive/lfg/swipe";
     private const string Admin = "/api/admin/squad-up";
 
+    // One database for the whole suite: a private region per test keeps live-pool counts and samples exact.
+    private readonly string region = $"t{Guid.NewGuid():N}"[..10];
+
     public async Task InitializeAsync() => await factory.Seeder.SeedFeatureFlagAsync("squad_up", enabled: true);
     public Task DisposeAsync() => Task.CompletedTask;
 
     private sealed record Player(Guid Id, HttpClient Client);
 
-    private async Task<Player> Queued(string region = "na", int tier = 15)
+    private async Task<Player> Queued(int tier = 15)
     {
         var id = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(id);
@@ -86,9 +89,9 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
     {
         var admin = await AdminWith("squad_up:view");
         var before = (await Json(await admin.GetAsync($"{Admin}/overview"))).GetProperty("totals");
-        var a = await Queued(region: "kr");
-        var b = await Queued(region: "kr");
-        var c = await Queued(region: "kr");
+        var a = await Queued();
+        var b = await Queued();
+        var c = await Queued();
         await a.Client.PostAsync($"{Swipe}/{b.Id}/right", null);
         await a.Client.PostAsync($"{Swipe}/{b.Id}/right", null); // repeat must not double count
         await a.Client.PostAsync($"{Swipe}/{c.Id}/left", null);
@@ -101,7 +104,7 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
         Delta("swipesRight").Should().Be(2);
         Delta("swipesLeft").Should().Be(1);
         Delta("matches").Should().Be(1);
-        var kr = after.GetProperty("live").GetProperty("byRegion").EnumerateArray().Single(r => r.GetProperty("region").GetString() == "kr");
+        var kr = after.GetProperty("live").GetProperty("byRegion").EnumerateArray().Single(r => r.GetProperty("region").GetString() == region);
         kr.GetProperty("players").GetInt32().Should().Be(3);
         after.GetProperty("flag").GetProperty("enabled").GetBoolean().Should().BeTrue();
     }
@@ -110,7 +113,7 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
     public async Task RestartingALiveSession_IsNotCountedAsANewSession()
     {
         var admin = await AdminWith("squad_up:view");
-        var p = await Queued(region: "latam");
+        var p = await Queued();
         var before = (await Json(await admin.GetAsync($"{Admin}/overview"))).GetProperty("totals").GetProperty("sessionsStarted").GetInt32();
         (await p.Client.PostAsJsonAsync($"{Swipe}/session", new { mic_on = false, slots_needed = 2 })).EnsureSuccessStatusCode();
         var after = (await Json(await admin.GetAsync($"{Admin}/overview"))).GetProperty("totals").GetProperty("sessionsStarted").GetInt32();
@@ -121,15 +124,15 @@ public sealed class SquadUpAdminEndpointsTests(ApiFactory factory) : IAsyncLifet
     public async Task Sessions_And_Matches_ListWhatAdminsNeedToModerate()
     {
         var admin = await AdminWith("squad_up:view");
-        var a = await Queued(region: "br");
-        var b = await Queued(region: "br");
+        var a = await Queued();
+        var b = await Queued();
         await a.Client.PostAsync($"{Swipe}/{b.Id}/right", null);
         await b.Client.PostAsync($"{Swipe}/{a.Id}/right", null);
 
         var sessions = (await Json(await admin.GetAsync($"{Admin}/sessions?limit=200"))).EnumerateArray().ToList();
         var row = sessions.Single(s => s.GetProperty("userId").GetGuid() == a.Id);
         row.GetProperty("likesSent").GetInt32().Should().Be(1);
-        row.GetProperty("region").GetString().Should().Be("br");
+        row.GetProperty("region").GetString().Should().Be(region);
 
         var matches = (await Json(await admin.GetAsync($"{Admin}/matches?limit=200"))).EnumerateArray().ToList();
         matches.Should().Contain(m => new[] { m.GetProperty("user1Id").GetGuid(), m.GetProperty("user2Id").GetGuid() }.OrderBy(x => x).SequenceEqual(new[] { a.Id, b.Id }.OrderBy(x => x)));
