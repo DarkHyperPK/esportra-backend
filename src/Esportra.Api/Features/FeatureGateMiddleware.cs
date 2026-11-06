@@ -99,7 +99,7 @@ public sealed class FeatureGateMiddleware(
             using var conn = connectionFactory.CreateConnection();
             var enabled = await conn.ExecuteScalarAsync<bool>(
                 new CommandDefinition(
-                    "SELECT COALESCE(is_enabled, TRUE) FROM feature_flags WHERE key = @key",
+                    "SELECT COALESCE((SELECT is_enabled FROM feature_flags WHERE key = @key), TRUE)",
                     new { key },
                     cancellationToken: ct));
             _cache[key] = (enabled, now + CacheTtl);
