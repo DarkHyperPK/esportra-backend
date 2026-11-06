@@ -1105,20 +1105,32 @@ public static class ScrimEndpoints
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
                    t2.name AS team2_name, t2.logo_url AS team2_logo,
-                   (SELECT tm.role FROM public.team_members tm
-                    WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
-                      AND tm.user_id = @userId
-                      AND tm.is_active = TRUE
-                    LIMIT 1) AS my_role
+                   COALESCE(
+                       (SELECT tm.role FROM public.team_members tm
+                        WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
+                          AND tm.user_id = @userId
+                          AND tm.is_active = TRUE
+                        LIMIT 1),
+                       CASE WHEN EXISTS(
+                           SELECT 1 FROM public.teams t
+                           WHERE t.id IN (ss.team1_id, ss.team2_id) AND t.owner_id = @userId
+                       ) THEN 'captain' END
+                   ) AS my_role
             FROM public.scrim_sessions ss
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
             WHERE ss.id = @id
-              AND EXISTS (
-                SELECT 1 FROM public.team_members tm
-                WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
-                  AND tm.user_id = @userId
-                  AND tm.is_active = TRUE
+              AND (
+                EXISTS (
+                    SELECT 1 FROM public.team_members tm
+                    WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
+                      AND tm.user_id = @userId
+                      AND tm.is_active = TRUE
+                )
+                OR EXISTS (
+                    SELECT 1 FROM public.teams t
+                    WHERE t.id IN (ss.team1_id, ss.team2_id) AND t.owner_id = @userId
+                )
               )
             """,
             new { id, userId = userCtx.UserIdGuid });
@@ -3080,6 +3092,10 @@ public static class ScrimEndpoints
                 SELECT 1 FROM public.team_members
                 WHERE team_id = @teamId AND user_id = @userId
                   AND role IN ('captain', 'manager') AND is_active = TRUE
+            )
+            OR EXISTS(
+                SELECT 1 FROM public.teams
+                WHERE id = @teamId AND owner_id = @userId
             )
             """,
             new { teamId, userId });
