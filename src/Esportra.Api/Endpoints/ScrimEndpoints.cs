@@ -137,7 +137,7 @@ public static class ScrimEndpoints
     {
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
         using var conn = db.CreateConnection();
-        if (!await IsTeamMemberAsync(conn, teamId, userCtx.UserIdGuid)) return StaffOnlyError();
+        if (!await IsTeamMemberAsync(conn, teamId, userCtx.UserIdGuid)) return MemberOnlyError();
         return Results.Ok(new { team_id = teamId, games = await ScrimRosterEligibility.EligibleGamesAsync(conn, teamId) });
     }
 
@@ -222,7 +222,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return MemberOnlyError();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -679,7 +679,7 @@ public static class ScrimEndpoints
         var teamId = await conn.ExecuteScalarAsync<Guid?>(
             "SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return StaffOnlyError();
+        if (!await IsTeamMemberAsync(conn, teamId.Value, userCtx.UserIdGuid)) return MemberOnlyError();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
@@ -737,7 +737,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return MemberOnlyError();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
@@ -965,14 +965,13 @@ public static class ScrimEndpoints
             SELECT DISTINCT tm.team_id
             FROM public.team_members tm
             WHERE tm.user_id = @userId
-              AND tm.role IN ('captain', 'manager')
               AND tm.is_active = TRUE
               AND (@teamId::uuid IS NULL OR tm.team_id = @teamId::uuid)
             """,
             new { userId = userCtx.UserIdGuid, teamId = team_id })).ToArray();
 
         if (teamIds.Length == 0)
-            return team_id.HasValue ? Results.Forbid() : Results.Ok(new ScrimUpNextResponse());
+            return team_id.HasValue ? MemberOnlyError() : Results.Ok(new ScrimUpNextResponse());
 
         var offers = await conn.QueryAsync<UpNextOfferRow>(
             """
@@ -1064,7 +1063,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return MemberOnlyError();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -1394,18 +1393,17 @@ public static class ScrimEndpoints
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
-        var isStaff = await conn.ExecuteScalarAsync<bool>(
+        var isMember = await conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS(
                 SELECT 1 FROM public.team_members tm
                 WHERE tm.team_id IN (@t1, @t2)
                   AND tm.user_id = @userId
-                  AND tm.role IN ('captain', 'manager')
                   AND tm.is_active = TRUE
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return StaffOnlyError();
+        if (!isMember) return MemberOnlyError();
 
         var rows = await conn.QueryAsync<ScrimResultReportRow>(
             """
@@ -2124,21 +2122,6 @@ public static class ScrimEndpoints
         if (session.Status != "in_progress")
             return Results.Conflict(new { error = "Recent matches are only available while the session is in progress." });
 
-        var isStaff = await conn.ExecuteScalarAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1 FROM public.team_members
-                WHERE team_id IN (@t1, @t2)
-                  AND user_id = @userId
-                  AND role IN ('captain', 'manager')
-                  AND is_active = TRUE
-            )
-            """,
-            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return StaffOnlyError();
-
-        // A person on both teams (or testing with one account) says which side they are reporting for,
-        // so the games come back from that team's point of view.
         var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
             """
             SELECT team_id FROM public.team_members
@@ -2147,7 +2130,7 @@ public static class ScrimEndpoints
             LIMIT 1
             """,
             new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id, wanted = team_id });
-        if (callerTeamId is null) return StaffOnlyError();
+        if (callerTeamId is null) return MemberOnlyError();
 
         var callerAccounts = (await conn.QueryAsync<dynamic>(
             """
@@ -3104,6 +3087,9 @@ public static class ScrimEndpoints
 
     private static IResult StaffOnlyError() =>
         Results.Json(new { error = "Only a captain or manager can manage scrims." }, statusCode: 403);
+
+    private static IResult MemberOnlyError() =>
+        Results.Json(new { error = "You must be an active member of this team." }, statusCode: 403);
 
     private static async Task<bool> IsTeamMemberAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
     {
