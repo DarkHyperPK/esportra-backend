@@ -135,7 +135,11 @@ public sealed class ScoreboardOcrEndpointTests : IDisposable
 
     public void Dispose()
     {
-        foreach (var host in _hosts) host.Dispose();
+        foreach (var host in _hosts)
+        {
+            try { host.Dispose(); }
+            catch (ObjectDisposedException) { }
+        }
     }
 
     private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null)
