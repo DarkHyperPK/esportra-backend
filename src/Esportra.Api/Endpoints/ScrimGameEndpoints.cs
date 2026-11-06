@@ -154,6 +154,19 @@ public static class ScrimGameEndpoints
             """,
             new { userId, t1 = s.Team1Id, t2 = s.Team2Id });
 
+    private static async Task<bool> CanViewSessionAsync(IDbConnection conn, Guid userId, SessionRow s) =>
+        await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE user_id = @userId AND team_id IN (@t1, @t2) AND is_active = TRUE
+            ) OR EXISTS(
+                SELECT 1 FROM public.teams
+                WHERE id IN (@t1, @t2) AND owner_id = @userId
+            )
+            """,
+            new { userId, t1 = s.Team1Id, t2 = s.Team2Id });
+
     /// <summary>
     /// Mirrors "a report waits for the other team" onto the session flags the room, the queue and the
     /// workspace already read: set for the reporting team while its map is unconfirmed, cleared otherwise.
@@ -169,7 +182,7 @@ public static class ScrimGameEndpoints
         using var conn = db.CreateConnection();
         var session = await LoadSessionAsync(conn, id);
         if (session is null) return Results.NotFound();
-        if (await CallerTeamAsync(conn, user.UserIdGuid, session) is null) return Results.Forbid();
+        if (!await CanViewSessionAsync(conn, user.UserIdGuid, session)) return Results.Forbid();
 
         var games = await LoadGamesAsync(conn, id);
         var states = States(games);
