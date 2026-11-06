@@ -137,7 +137,7 @@ public static class ScrimEndpoints
     {
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
         using var conn = db.CreateConnection();
-        if (!await IsTeamMemberAsync(conn, teamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, teamId, userCtx.UserIdGuid)) return StaffOnlyError();
         return Results.Ok(new { team_id = teamId, games = await ScrimRosterEligibility.EligibleGamesAsync(conn, teamId) });
     }
 
@@ -164,7 +164,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
         if (!await ScrimRosterEligibility.IsEligibleAsync(conn, req.TeamId, req.GameSlug))
             return Results.UnprocessableEntity(new { error = "Your team needs a full roster for this game before it can post a scrim listing." });
 
@@ -222,7 +222,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -272,7 +272,7 @@ public static class ScrimEndpoints
 
         var teamId = await conn.ExecuteScalarAsync<Guid?>("SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimListingRow>(
             """
@@ -608,7 +608,7 @@ public static class ScrimEndpoints
         if (listing.Status != "open")
             return Results.BadRequest(new { error = "Listing is not open." });
 
-        if (!await IsTeamStaffAsync(conn, req.OfferingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, req.OfferingTeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var existingOffer = await conn.ExecuteScalarAsync<Guid?>(
             """
@@ -679,7 +679,7 @@ public static class ScrimEndpoints
         var teamId = await conn.ExecuteScalarAsync<Guid?>(
             "SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
@@ -737,7 +737,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
@@ -795,7 +795,7 @@ public static class ScrimEndpoints
             if (!await IsTeamStaffAsync(conn, offerRow.ListingTeamId, userCtx.UserIdGuid))
             {
                 tx.Rollback();
-                return Results.Forbid();
+                return StaffOnlyError();
             }
 
             // Optimistic update — prevents double-accept under concurrent requests.
@@ -1064,7 +1064,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -1100,6 +1100,7 @@ public static class ScrimEndpoints
 
         // Fetch session + raw veto tokens (tokens are excluded from ScrimSessionRow mapping).
         // my_role: caller's team_members.role — used by the frontend to gate the check-in button.
+        // Any active team member (not just captain/manager) can view their session room.
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionWithTokens>(
             """
             SELECT ss.*,
@@ -1118,7 +1119,6 @@ public static class ScrimEndpoints
                 SELECT 1 FROM public.team_members tm
                 WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
                   AND tm.user_id = @userId
-                  AND tm.role IN ('captain', 'manager')
                   AND tm.is_active = TRUE
               )
             """,
@@ -1298,7 +1298,7 @@ public static class ScrimEndpoints
 
         var isParty = req.ReportingTeamId == session.Team1Id || req.ReportingTeamId == session.Team2Id;
         if (!isParty) return Results.BadRequest(new { error = "Reporting team is not a party to this session." });
-        if (!await IsTeamStaffAsync(conn, req.ReportingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, req.ReportingTeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         // Series scores must be a real result of the listing's match format:
         // winner has exactly winsNeeded series wins, loser has fewer but never negative.
@@ -1405,7 +1405,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         var rows = await conn.QueryAsync<ScrimResultReportRow>(
             """
@@ -1454,7 +1454,7 @@ public static class ScrimEndpoints
 
         var isParty = req.RaisedByTeamId == session.Team1Id || req.RaisedByTeamId == session.Team2Id;
         if (!isParty) return Results.BadRequest(new { error = "Team is not a party to this session." });
-        if (!await IsTeamStaffAsync(conn, req.RaisedByTeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, req.RaisedByTeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var dispute = await conn.QuerySingleAsync<ScrimDisputeRow>(
             """
@@ -1544,7 +1544,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
             """
@@ -1554,7 +1554,7 @@ public static class ScrimEndpoints
             LIMIT 1
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (callerTeamId is null) return Results.Forbid();
+        if (callerTeamId is null) return StaffOnlyError();
 
         // The team that raised the dispute adds to its own evidence; the other team to its response.
         // A map dispute is picked by game number; otherwise the latest open dispute.
@@ -1607,7 +1607,7 @@ public static class ScrimEndpoints
                             AND role IN ('captain', 'manager') AND is_active = TRUE)
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         var bytes = await ScoreboardOcrEndpoints.ReadAllAsync(file, ct);
         var check = ScreenshotValidator.Validate(file.FileName, bytes);
@@ -1658,7 +1658,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
             """
@@ -1741,7 +1741,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         // Fetch ALL result reports for this session — both teams may have filed one.
         var reports = (await conn.QueryAsync<ScrimResultReportRow>(
@@ -1767,7 +1767,7 @@ public static class ScrimEndpoints
             """,
             new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
 
-        if (callerTeamId is null) return Results.Forbid();
+        if (callerTeamId is null) return StaffOnlyError();
 
         // Find the report filed by the OPPOSING team. The confirming team cannot
         // confirm their own report.
@@ -1886,7 +1886,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         // Identify which team the caller belongs to.
         var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
@@ -1899,7 +1899,7 @@ public static class ScrimEndpoints
             """,
             new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
 
-        if (callerTeamId is null) return Results.Forbid();
+        if (callerTeamId is null) return StaffOnlyError();
 
         var isTeam1 = callerTeamId == session.Team1Id;
 
@@ -2074,7 +2074,7 @@ public static class ScrimEndpoints
         if (listing is null) return Results.NotFound();
         if (listing.ScheduleType != "recurring")
             return Results.BadRequest(new { error = "Slots can only be created for recurring listings." });
-        if (!await IsTeamStaffAsync(conn, listing.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, listing.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var created = new List<ScrimSlotRow>();
         foreach (var slot in req.Slots)
@@ -2135,7 +2135,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         // A person on both teams (or testing with one account) says which side they are reporting for,
         // so the games come back from that team's point of view.
@@ -2147,7 +2147,7 @@ public static class ScrimEndpoints
             LIMIT 1
             """,
             new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id, wanted = team_id });
-        if (callerTeamId is null) return Results.Forbid();
+        if (callerTeamId is null) return StaffOnlyError();
 
         var callerAccounts = (await conn.QueryAsync<dynamic>(
             """
@@ -2372,7 +2372,7 @@ public static class ScrimEndpoints
             var isMember = await conn.ExecuteScalarAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM public.team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
                 new { teamId, userId = callerCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
+            if (!isMember) return StaffOnlyError();
             computeResult = true;
         }
         else
@@ -2453,7 +2453,7 @@ public static class ScrimEndpoints
         var exists = await conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.teams WHERE id = @teamId)", new { teamId });
         if (!exists) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, teamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         await conn.ExecuteAsync(
             "UPDATE public.teams SET scrim_history_public = @isPublic WHERE id = @teamId",
@@ -2535,7 +2535,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
-        if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var row = await conn.QuerySingleAsync<PracticeSessionRow>(
             """
@@ -2574,7 +2574,7 @@ public static class ScrimEndpoints
         var isMember = await conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
             new { teamId = team_id.Value, userId = userCtx.UserIdGuid });
-        if (!isMember) return Results.Forbid();
+        if (!isMember) return StaffOnlyError();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -2624,7 +2624,7 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
         var teamId = await conn.ExecuteScalarAsync<Guid?>("SELECT team_id FROM public.practice_sessions WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var updated = await conn.QuerySingleOrDefaultAsync<PracticeSessionRow>(
             """
@@ -2659,7 +2659,7 @@ public static class ScrimEndpoints
         var isMember = await conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
             new { teamId = teamId.Value, userId = userCtx.UserIdGuid });
-        if (!isMember) return Results.Forbid();
+        if (!isMember) return StaffOnlyError();
 
         var rows = await conn.QueryAsync<PracticeAttendanceRow>(
             """
@@ -2685,7 +2685,7 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
         var teamId = await conn.ExecuteScalarAsync<Guid?>("SELECT team_id FROM public.practice_sessions WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return StaffOnlyError();
 
         foreach (var entry in req.Entries ?? [])
         {
@@ -2742,7 +2742,7 @@ public static class ScrimEndpoints
         var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var pendingOffers = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM public.scrim_offers WHERE listing_id = @id AND status = 'pending'",
@@ -2769,7 +2769,7 @@ public static class ScrimEndpoints
         var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
         if (!from.Contains(row.Status))
             return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
@@ -2802,7 +2802,7 @@ public static class ScrimEndpoints
             )
             """,
             new { t1 = row.Team1Id, t2 = row.Team2Id, userId = userCtx.UserIdGuid });
-        if (!isStaff) return Results.Forbid();
+        if (!isStaff) return StaffOnlyError();
 
         if (!from.Contains(row.Status))
             return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
@@ -2844,7 +2844,7 @@ public static class ScrimEndpoints
         var row = await conn.QuerySingleOrDefaultAsync<PracticeSessionRef>(
             "SELECT team_id, status FROM public.practice_sessions WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return StaffOnlyError();
         if (!from.Contains(row.Status))
             return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
@@ -2872,7 +2872,7 @@ public static class ScrimEndpoints
         if (offer is null) return Results.NotFound();
 
         var checkTeamId = requiresListingTeam ? offer.ListingTeamId : offer.OfferingTeamId;
-        if (!await IsTeamStaffAsync(conn, checkTeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamStaffAsync(conn, checkTeamId, userCtx.UserIdGuid)) return StaffOnlyError();
 
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimOfferRow>(
             "UPDATE public.scrim_offers SET status = @target::scrim_offer_status, updated_at = now() WHERE id = @id RETURNING *",
@@ -3101,6 +3101,9 @@ public static class ScrimEndpoints
             """,
             new { teamId, userId });
     }
+
+    private static IResult StaffOnlyError() =>
+        Results.Json(new { error = "Only a captain or manager can manage scrims." }, statusCode: 403);
 
     private static async Task<bool> IsTeamMemberAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
     {
