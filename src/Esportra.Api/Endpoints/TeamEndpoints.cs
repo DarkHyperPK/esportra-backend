@@ -133,7 +133,7 @@ public static class TeamEndpoints
                            (SELECT m2.role FROM public.team_members m2
                             WHERE m2.team_id = t.id AND m2.user_id = @userId AND m2.is_active = TRUE
                             LIMIT 1),
-                           CASE WHEN t.owner_id = @userId THEN 'captain' END
+                           CASE WHEN t.owner_id = @userId THEN 'captain'::team_member_role END
                        ) AS my_role
                 FROM teams t
                 LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE

@@ -1114,7 +1114,7 @@ public static class ScrimEndpoints
                        CASE WHEN EXISTS(
                            SELECT 1 FROM public.teams t
                            WHERE t.id IN (ss.team1_id, ss.team2_id) AND t.owner_id = @userId
-                       ) THEN 'captain' END
+                       ) THEN 'captain'::team_member_role END
                    ) AS my_role
             FROM public.scrim_sessions ss
             JOIN public.teams t1 ON t1.id = ss.team1_id
