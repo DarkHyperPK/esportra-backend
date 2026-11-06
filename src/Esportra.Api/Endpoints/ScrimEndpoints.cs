@@ -1413,6 +1413,10 @@ public static class ScrimEndpoints
                   AND tm.user_id = @userId
                   AND tm.is_active = TRUE
             )
+            OR EXISTS(
+                SELECT 1 FROM public.teams t
+                WHERE t.id IN (@t1, @t2) AND t.owner_id = @userId
+            )
             """,
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
         if (!isMember) return MemberOnlyError();
@@ -3114,6 +3118,10 @@ public static class ScrimEndpoints
             SELECT EXISTS(
                 SELECT 1 FROM public.team_members
                 WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
+            )
+            OR EXISTS(
+                SELECT 1 FROM public.teams
+                WHERE id = @teamId AND owner_id = @userId
             )
             """,
             new { teamId, userId });
