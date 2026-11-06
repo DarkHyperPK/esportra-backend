@@ -20,6 +20,32 @@ _NAME_CONFUSABLES = str.maketrans(
 )
 
 
+def strip_latin_accents(text: str) -> str:
+    """Strip diacritics from Latin characters. Riot game names are ASCII-only, so accented
+    Latin (ö, é, ë) produced by PaddleOCR on Valorant's angular font are misreads.
+    Arabic, Korean and CJK characters are left untouched."""
+    out: list[str] = []
+    for ch in text:
+        if ord(ch) > 127:
+            decomposed = unicodedata.normalize("NFKD", ch)
+            base = decomposed[0] if decomposed else ch
+            if base.isascii() and base.isalpha():
+                out.append(base)
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def is_non_latin_script(ch: str) -> bool:
+    """True for alphabetic characters outside Latin script blocks (Arabic, Hangul, CJK, etc.).
+    Accented Latin (ö, é, ñ) returns False — those are OCR artifacts, not real script switches."""
+    if not ch.isalpha():
+        return False
+    decomposed = unicodedata.normalize("NFKD", ch)
+    base = decomposed[0] if decomposed else ch
+    return not base.isascii()
+
+
 def normalize_header(text: str) -> str:
     upper = unicodedata.normalize("NFKC", text).upper().replace(".", "")
     return re.sub(r"\s+", " ", upper).strip()

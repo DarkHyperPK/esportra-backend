@@ -88,7 +88,9 @@ def refresh_if_changed(cache_dir: Path, current: Catalog) -> Catalog | None:
 
 def _download(cache_dir: Path, version: str | None) -> None:
     icons_dir = cache_dir / "agents"
+    killfeed_dir = cache_dir / "killfeed"
     icons_dir.mkdir(parents=True, exist_ok=True)
+    killfeed_dir.mkdir(parents=True, exist_ok=True)
     with httpx.Client(timeout=20.0, follow_redirects=False) as client:
         agents = client.get(AGENTS_URL).raise_for_status().json()["data"]
         maps = client.get(MAPS_URL).raise_for_status().json()["data"]
@@ -98,6 +100,12 @@ def _download(cache_dir: Path, version: str | None) -> None:
             if httpx.URL(icon_url).host != ALLOWED_ICON_HOST:
                 continue
             (icons_dir / f"{agent['uuid']}.png").write_bytes(client.get(icon_url).raise_for_status().content)
+            kf_url = str(agent.get("killfeedPortrait") or "")
+            if kf_url and httpx.URL(kf_url).host == ALLOWED_ICON_HOST:
+                try:
+                    (killfeed_dir / f"{agent['uuid']}.png").write_bytes(client.get(kf_url).raise_for_status().content)
+                except httpx.HTTPError:
+                    pass
             role = (agent.get("role") or {}).get("displayName")
             agent_rows.append({"uuid": agent["uuid"], "name": agent["displayName"], "role": role})
     map_rows = [{"name": m["displayName"], "uuid": m["uuid"], "mapUrl": m.get("mapUrl")} for m in maps]
@@ -123,5 +131,15 @@ def _read_cache(cache_dir: Path) -> Catalog:
     known = {m.name.casefold() for m in maps}
     # Keep maps valorant-api hasn't listed yet (the fallback list is updated with new releases).
     maps += [MapRef(name=name) for name in FALLBACK_MAPS if name.casefold() not in known]
-    bank = bundled_bank().with_icons({a.ref.name: a.icon_bgra for a in agents})
+    display_icons = {a.ref.name: a.icon_bgra for a in agents}
+    killfeed_icons: dict[str, np.ndarray] = {}
+    killfeed_dir = cache_dir / "killfeed"
+    name_by_uuid = {row["uuid"]: row["name"] for row in data.get("agents", [])}
+    for uuid, name in name_by_uuid.items():
+        kf_path = killfeed_dir / f"{uuid}.png"
+        if kf_path.exists():
+            kf = cv2.imread(str(kf_path), cv2.IMREAD_UNCHANGED)
+            if kf is not None:
+                killfeed_icons[name] = kf
+    bank = bundled_bank().with_icons(display_icons).with_icons(killfeed_icons)
     return Catalog(agents=agents, maps=maps, bank=bank, version=data.get("version"), refreshed_at=data.get("refreshedAt"))

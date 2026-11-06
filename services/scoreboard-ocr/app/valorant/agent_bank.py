@@ -134,6 +134,29 @@ class AgentBank:
         stacked = np.stack(hogs) if hogs else self.icon_hogs
         return AgentBank(self.names, self.sources, self.thumbs, names, stacked)
 
+    def grow(self, name: str, portrait_bgr: np.ndarray, source_id: str) -> bool:
+        """Save a confirmed portrait crop to disk and add it to the in-memory bank.
+        Returns True when the crop was added, False when skipped (duplicate, limit, bad crop)."""
+        if portrait_bgr.size == 0 or min(portrait_bgr.shape[:2]) < 12:
+            return False
+        agent_dir = BANK_DIR / folder_name(name)
+        auto_prefix = f"auto_{source_id}"
+        if any(s.startswith(auto_prefix) for s in self.sources):
+            return False
+        existing = list(agent_dir.glob("auto_*.png")) if agent_dir.exists() else []
+        if len(existing) >= MAX_AUTO_CROPS:
+            return False
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        path = agent_dir / f"{auto_prefix}.png"
+        cv2.imwrite(str(path), portrait_bgr)
+        variants = thumb_variants(portrait_bgr)
+        new_names = [name] * VARIANTS
+        new_sources = [auto_prefix] * VARIANTS
+        self.names = self.names + new_names
+        self.sources = self.sources + new_sources
+        self.thumbs = np.concatenate([self.thumbs, variants]) if self.thumbs.size else variants
+        return True
+
     def without_source(self, prefix: str) -> AgentBank:
         """The bank minus crops taken from one screenshot (leave-one-out evaluation)."""
         keep = [i for i, s in enumerate(self.sources) if not s.startswith(prefix)]
@@ -181,8 +204,15 @@ class AgentBank:
         return AgentGuess(name, 0.45, "icon")  # below the review threshold on purpose
 
 
+MAX_AUTO_CROPS = 50
+
+
 def display_name(folder: str) -> str:
     return folder.replace("_", "/")
+
+
+def folder_name(name: str) -> str:
+    return name.replace("/", "_")
 
 
 @lru_cache(maxsize=1)

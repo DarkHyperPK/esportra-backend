@@ -8,7 +8,7 @@ from statistics import median
 
 from app.engine import OcrToken
 from app.valorant.columns import Column
-from app.valorant.text import normalize_header, parse_number, split_kda
+from app.valorant.text import normalize_header, parse_number, split_kda, strip_latin_accents
 
 MAX_ROWS = 12
 
@@ -124,7 +124,7 @@ def _assign_name(row: Row, name_tokens: list[OcrToken]) -> None:
     text = " ".join(t.text for t in upper)
     if "|" in text:
         text = text.rsplit("|", 1)[1]
-    row.name = text.strip().lstrip(":;.,'`-_ ")
+    row.name = strip_latin_accents(text.strip().lstrip(":;.,'`-_ "))
     row.name_conf = min(t.conf for t in upper)
     row.name_x0 = upper[0].x0
     row.name_x1 = max(t.x1 for t in upper)

@@ -17,6 +17,7 @@ import numpy as np
 from app.engine import OcrEngine
 from app.valorant.columns import Column
 from app.valorant.rows import Row, stat_boundary
+from app.valorant.text import is_non_latin_script, strip_latin_accents
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,10 @@ def _read(engine: OcrEngine, crop: np.ndarray, script: str | None) -> tuple[str,
     if scale > 1.05:
         crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     text, conf = engine.recognize(crop, script) if script else engine.recognize(crop)
-    return text.strip(), conf
+    text = text.strip()
+    if script is None:
+        text = strip_latin_accents(text)
+    return text, conf
 
 
 def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | None]:
@@ -69,25 +73,26 @@ def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | No
     if not reads:
         return ("", 0.0, None)
 
-    # Combine complementary reads when one recogniser returns only script chars and
-    # another returns only ASCII chars (e.g. Arabic "عبس" + default "404" → "عبس404").
-    non_ascii = [(t, c, s) for t, c, s in reads if any(ord(ch) > 127 for ch in t) and c >= ACCEPT_FROM]
-    ascii_only = [(t, c, s) for t, c, s in reads if all(ord(ch) <= 127 for ch in t) and c >= ACCEPT_FROM]
-    if non_ascii and ascii_only:
-        best_na = max(non_ascii, key=lambda r: r[1])
-        best_a = max(ascii_only, key=lambda r: r[1])
-        na_text = best_na[0]
+    # Combine complementary reads when one recogniser returns non-Latin script chars and
+    # another returns only Latin/ASCII chars (e.g. Arabic "عبس" + default "404" → "عبس404").
+    # Accented Latin (ö, é) is NOT treated as non-Latin — it's an OCR misread, not a script switch.
+    non_latin = [(t, c, s) for t, c, s in reads if any(is_non_latin_script(ch) for ch in t) and c >= ACCEPT_FROM]
+    latin_only = [(t, c, s) for t, c, s in reads if not any(is_non_latin_script(ch) for ch in t) and c >= ACCEPT_FROM]
+    if non_latin and latin_only:
+        best_nl = max(non_latin, key=lambda r: r[1])
+        best_l = max(latin_only, key=lambda r: r[1])
+        nl_text = best_nl[0]
         # Script read already captured both scripts (e.g. Arabic recogniser returned عبس404) — prefer it.
-        if any(ch.isalnum() and ord(ch) <= 127 for ch in na_text):
-            return best_na
-        # Script read is purely non-ASCII alphanumeric — combine only when the ASCII-only portion is
+        if any(ch.isalnum() and not is_non_latin_script(ch) for ch in nl_text):
+            return best_nl
+        # Script read is purely non-Latin alphanumeric — combine only when the Latin-only portion is
         # entirely digits (a numeric Riot tag suffix like "404"). If it contains letters, the default
         # model misread Arabic as Latin; trust the script read alone rather than producing a franken-name.
-        if all(ord(ch) > 127 or not ch.isalnum() for ch in na_text):
-            ascii_alnum = [ch for ch in best_a[0] if ch.isalnum()]
-            if ascii_alnum and all(ch.isdigit() for ch in ascii_alnum):
-                return (na_text + best_a[0], min(best_na[1], best_a[1]), best_na[2])
-            return best_na
+        if all(is_non_latin_script(ch) or not ch.isalnum() for ch in nl_text):
+            latin_alnum = [ch for ch in best_l[0] if ch.isalnum()]
+            if latin_alnum and all(ch.isdigit() for ch in latin_alnum):
+                return (nl_text + best_l[0], min(best_nl[1], best_l[1]), best_nl[2])
+            return best_nl
 
     return max(reads, key=lambda r: r[1])
 
@@ -124,7 +129,7 @@ def recover_names(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns
             conf >= ACCEPT_FROM
             and script is not None
             and row.name_script is None
-            and any(ord(ch) > 127 and ch.isalnum() for ch in text)
+            and any(is_non_latin_script(ch) for ch in text)
         )
         if conf >= ACCEPT_FROM and (conf > row.name_conf or is_script_upgrade):
             row.name = text.rsplit("|", 1)[-1].strip() if script is None else text

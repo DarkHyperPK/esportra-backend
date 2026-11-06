@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
 
 import cv2
@@ -11,6 +13,10 @@ from app.engine import OcrEngine
 from app.models import STAT_KEYS, OcrField, PlayerRow, Rosters, ScoreboardResult, ScoreboardWarning, TeamSlot
 from app.valorant.agents import identify_agent
 from app.valorant.catalog import Catalog
+
+_log = logging.getLogger(__name__)
+
+BANK_GROW_MIN_CONFIDENCE = 0.85
 from app.valorant.checks import check_hidden_names, check_kills, check_rows, check_score
 from app.valorant.columns import Column, find_header
 from app.valorant.header import read_header
@@ -220,6 +226,8 @@ def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog,
     if abs(stretch - 1) > STRETCH_TOLERANCE:
         warnings.append(ScoreboardWarning(code="STRETCHED_CAPTURE", message=f"The screenshot was stretched ({stretch:.2f}x); it was straightened before reading."))
 
+    _grow_bank(catalog, players, portraits)
+
     height, width = image_bgr.shape[:2]
     return ScoreboardResult(
         parser_version=PARSER_VERSION,
@@ -237,3 +245,19 @@ def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog,
         players=players,
         warnings=warnings,
     )
+
+
+def _grow_bank(catalog: Catalog, players: list[PlayerRow], portraits: list[np.ndarray]) -> None:
+    """Save high-confidence portrait crops back into the agent bank so it improves over time."""
+    for player, portrait in zip(players, portraits):
+        agent = player.agent
+        if agent.value is None or agent.confidence < BANK_GROW_MIN_CONFIDENCE:
+            continue
+        if portrait.size == 0 or min(portrait.shape[:2]) < 12:
+            continue
+        source_id = hashlib.md5(portrait.tobytes()[:4096]).hexdigest()[:10]
+        try:
+            if catalog.bank.grow(agent.value.name, portrait, source_id):
+                _log.info("Bank: added crop for %s (source %s)", agent.value.name, source_id)
+        except OSError as exc:
+            _log.warning("Bank: failed to save crop for %s: %s", agent.value.name, exc)
