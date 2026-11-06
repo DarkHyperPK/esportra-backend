@@ -1,4 +1,4 @@
-#pragma warning disable CS8767 // ADO.NET abstract members were annotated inconsistently across .NET versions
+#pragma warning disable CS8764, CS8765, CS8767 // ADO.NET abstract members were annotated inconsistently across .NET versions
 
 using System.Collections;
 using System.Data;

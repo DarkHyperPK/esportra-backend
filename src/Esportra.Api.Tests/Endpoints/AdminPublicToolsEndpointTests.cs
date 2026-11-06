@@ -59,6 +59,7 @@ public sealed class AdminPublicToolsEndpointTests
             "DELETE /api/tools/brackets/{id:guid}");
     }
 
+
     [Theory]
     [InlineData(null, HttpStatusCode.Unauthorized)]
     [InlineData("member", HttpStatusCode.Forbidden)]
@@ -259,6 +260,7 @@ internal sealed class PublicToolsTestHost(WebApplication app, RecordingPublicToo
         if (identity is not null) request.Headers.Add("X-Test-Identity", identity);
         return await app.GetTestClient().SendAsync(request);
     }
+
 
     public ValueTask DisposeAsync() => app.DisposeAsync();
 }
