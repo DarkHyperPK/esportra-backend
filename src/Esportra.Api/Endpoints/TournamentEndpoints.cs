@@ -569,6 +569,52 @@ public static class TournamentEndpoints
             }
 
             var canManage = access.IsOrganizer || isSuperAdmin;
+
+            if (canManage)
+            {
+                var teamIds = allParticipants
+                    .Where(p => p.team_id is not null
+                        && !string.Equals(p.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase))
+                    .Select(p => (Guid)p.team_id)
+                    .Distinct()
+                    .ToArray();
+
+                if (teamIds.Length > 0)
+                {
+                    var memberRows = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT tm.team_id, p.id AS user_id, p.username,
+                               p.avatar_url, p.riot_tag,
+                               p.social_links->>'discord_handle' AS discord_handle,
+                               p.steam_tag
+                        FROM team_members tm
+                        JOIN profiles p ON p.id = tm.user_id
+                        WHERE tm.team_id = ANY(@teamIds) AND tm.is_active = true
+                        ORDER BY tm.display_order, p.username
+                        """, new { teamIds });
+
+                    var membersByTeam = memberRows
+                        .GroupBy(m => (Guid)m.team_id)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => (object)g.Select(m => new
+                            {
+                                user_id = (Guid)m.user_id,
+                                username = (string)m.username,
+                                avatar_url = m.avatar_url as string,
+                                riot_tag = m.riot_tag as string,
+                                discord_handle = m.discord_handle as string,
+                                steam_tag = m.steam_tag as string,
+                            }).ToList());
+
+                    foreach (var p in allParticipants)
+                    {
+                        if (p.team_id is Guid tid && membersByTeam.TryGetValue(tid, out var members))
+                            ((IDictionary<string, object>)p)["team_members"] = members;
+                    }
+                }
+            }
+
             var participants = FilterParticipantsForRole(allParticipants, canManage);
             var mockCount = await FetchMockCountAsync(conn, tournamentId, canManage);
             var participantMode = await ResolveParticipantModeAsync(gameCatalog, tournament);
@@ -2311,6 +2357,10 @@ public static class TournamentEndpoints
                        COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind,
                        tm.user_id AS member_user_id,
                        p.username AS member_username,
+                       p.avatar_url AS member_avatar_url,
+                       p.riot_tag AS member_riot_tag,
+                       p.social_links->>'discord_handle' AS member_discord_handle,
+                       p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2331,16 +2381,32 @@ public static class TournamentEndpoints
 
             var first = rows[0];
             var isSoloEntry = string.Equals(first.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase);
-            var members = rows
+            var memberRows = rows
                 .Where(m => m.member_user_id is not null)
-                .Select(m => new { user_id = (Guid)m.member_user_id, username = (string)m.member_username })
-                .Distinct()
+                .GroupBy(m => (Guid)m.member_user_id)
+                .Select(g =>
+                {
+                    var m = g.First();
+                    var member = new Dictionary<string, object?>
+                    {
+                        ["user_id"] = (Guid)m.member_user_id,
+                        ["username"] = (string)m.member_username
+                    };
+                    if (access.IsOrganizer)
+                    {
+                        member["avatar_url"] = m.member_avatar_url as string;
+                        member["riot_tag"] = m.member_riot_tag as string;
+                        member["discord_handle"] = m.member_discord_handle as string;
+                        member["steam_tag"] = m.member_steam_tag as string;
+                    }
+                    return member;
+                })
                 .ToList();
 
             return Results.Ok(ParticipantResponseHelper.EnrichParticipant(
                 first,
-                isSoloEntry ? null : members,
-                isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)),
+                isSoloEntry ? null : memberRows,
+                isSoloEntry ? string.Empty : string.Join(", ", memberRows.Select(m => m["username"] as string)),
                 includePii: access.IsOrganizer));
         }).RequireAuthorization("Authenticated");
 
@@ -2462,6 +2528,10 @@ public static class TournamentEndpoints
                        COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind,
                        tm.user_id AS member_user_id,
                        p.username AS member_username,
+                       p.avatar_url AS member_avatar_url,
+                       p.riot_tag AS member_riot_tag,
+                       p.social_links->>'discord_handle' AS member_discord_handle,
+                       p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2485,16 +2555,32 @@ public static class TournamentEndpoints
                 {
                     var first = g.First();
                     var isSoloEntry = string.Equals(first.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase);
-                    var members = g
+                    var memberRows = g
                         .Where(m => m.member_user_id is not null)
-                        .Select(m => new { user_id = (Guid)m.member_user_id, username = (string)m.member_username })
-                        .Distinct()
+                        .GroupBy(m => (Guid)m.member_user_id)
+                        .Select(mg =>
+                        {
+                            var m = mg.First();
+                            var member = new Dictionary<string, object?>
+                            {
+                                ["user_id"] = (Guid)m.member_user_id,
+                                ["username"] = (string)m.member_username
+                            };
+                            if (access.IsOrganizer)
+                            {
+                                member["avatar_url"] = m.member_avatar_url as string;
+                                member["riot_tag"] = m.member_riot_tag as string;
+                                member["discord_handle"] = m.member_discord_handle as string;
+                                member["steam_tag"] = m.member_steam_tag as string;
+                            }
+                            return member;
+                        })
                         .ToList();
 
                     return ParticipantResponseHelper.EnrichParticipant(
                         first,
-                        isSoloEntry ? null : members,
-                        isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)),
+                        isSoloEntry ? null : memberRows,
+                        isSoloEntry ? string.Empty : string.Join(", ", memberRows.Select(m => m["username"] as string)),
                         includePii: access.IsOrganizer);
                 })
                 .ToList();
