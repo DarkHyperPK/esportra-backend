@@ -672,4 +672,73 @@ public static class EmailTemplates
         var html = Wrap(preheader, subject, body);
         return (subject, html);
     }
+
+    internal static (string Subject, string Html) BuildTemplate(EmailType type, object data)
+    {
+        var d = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
+            System.Text.Json.JsonSerializer.Serialize(data)) ?? [];
+
+        string Get(string key, string fallback = "") =>
+            d.TryGetValue(key, out var v)
+                ? v.ValueKind switch
+                {
+                    System.Text.Json.JsonValueKind.String => v.GetString() ?? fallback,
+                    System.Text.Json.JsonValueKind.Number => v.GetRawText(),
+                    System.Text.Json.JsonValueKind.True => "true",
+                    System.Text.Json.JsonValueKind.False => "false",
+                    _ => fallback
+                }
+                : fallback;
+
+        return type switch
+        {
+            EmailType.BroadcastCrewInvite => BroadcastCrewInvite(Get("showTitle"), Get("role"), Get("acceptUrl")),
+            EmailType.Welcome => Welcome(Get("username")),
+            EmailType.TournamentRegistration =>
+                TournamentRegistration(
+                    Get("username"), Get("tournamentName"),
+                    Get("startDate"), Get("tournamentUrl"),
+                    Get("endDate"), Get("game"),
+                    Get("teamName"), Get("registrationType")),
+            EmailType.TeamInvite =>
+                TeamInvite(Get("inviteeName"), Get("teamName"), Get("captainName"), Get("acceptUrl")),
+            EmailType.StaffInvite =>
+                StaffInvite(Get("inviteeName"), Get("orgName"), Get("role"), Get("permissions"), Get("acceptUrl")),
+            EmailType.PartnerInvite =>
+                PartnerInvite(
+                    Get("sponsorName"), Get("invitationUrl"),
+                    bool.TryParse(Get("accountExists"), out var accountExists) && accountExists,
+                    bool.TryParse(Get("requiresPasswordSetup"), out var requiresPasswordSetup) && requiresPasswordSetup),
+            EmailType.PartnerWelcome => PartnerWelcome(Get("sponsorName"), Get("portalUrl")),
+            EmailType.PasswordReset => PasswordReset(Get("resetUrl")),
+            EmailType.LicenseApplicationReceived =>
+                LicenseApplicationReceived(Get("username"), Get("licenseType"), Get("dashboardUrl")),
+            EmailType.LicenseApproved =>
+                LicenseApproved(
+                    Get("username"), Get("licenseType"), Get("licenseId"),
+                    Get("issuedAt"), Get("expiresAt"), Get("dashboardUrl")),
+            EmailType.LicenseRejected =>
+                LicenseRejected(Get("username"), Get("licenseType"), Get("dashboardUrl")),
+            EmailType.TournamentInvite =>
+                TournamentInvite(
+                    Get("captainName"), Get("tournamentName"),
+                    Get("code"), Get("tournamentUrl"), Get("expiryDate"), Get("gameHeaderUrl")),
+            EmailType.Broadcast =>
+                Broadcast(Get("title"), Get("content"), Get("broadcastType", "announcement"), Get("priority", "normal")),
+            EmailType.MatchChatMessage =>
+                MatchChatMessage(
+                    Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl"),
+                    int.TryParse(Get("unreadCount"), out var uc) ? uc : 1),
+            EmailType.DisputeResolved =>
+                DisputeResolved(
+                    Get("referenceNumber"), Get("title"), Get("status"),
+                    Get("resolutionNotes"), Get("tournamentName"),
+                    Get("disputeUrl"), Get("recipientType"), Get("filerName")),
+            EmailType.DisputeComment =>
+                DisputeComment(
+                    Get("referenceNumber"), Get("commenterName"),
+                    Get("commentPreview"), Get("disputeUrl"), Get("tournamentName")),
+            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
+        };
+    }
 }

@@ -12,14 +12,20 @@ namespace Esportra.Infrastructure.Email;
 /// Config required: Ses:AccessKeyId, Ses:SecretAccessKey, Ses:Region,
 ///                  Ses:FromEmail, Ses:FromName
 /// </summary>
-public sealed class SesEmailService(
-    IConfiguration config,
-    ILogger<SesEmailService> logger) : IEmailService
+public sealed class SesEmailService : IEmailService
 {
-    private readonly string _fromAddress =
-        $"{config["Ses:FromName"] ?? "Esportra"} <{config["Ses:FromEmail"] ?? "operations@esportra.com"}>";
+    private readonly AmazonSimpleEmailServiceV2Client _client;
+    private readonly string _fromAddress;
+    private readonly ILogger<SesEmailService> _logger;
 
-    public async Task SendAsync(string toEmail, EmailType type, object data, CancellationToken ct = default)
+    public SesEmailService(IConfiguration config, ILogger<SesEmailService> logger)
+    {
+        _logger = logger;
+        _fromAddress = $"{config["Ses:FromName"] ?? "Esportra"} <{config["Ses:FromEmail"] ?? "operations@esportra.com"}>";
+        _client = CreateClient(config);
+    }
+
+    private static AmazonSimpleEmailServiceV2Client CreateClient(IConfiguration config)
     {
         var accessKeyId = config["Ses:AccessKeyId"];
         var secretKey = config["Ses:SecretAccessKey"];
@@ -31,10 +37,14 @@ public sealed class SesEmailService(
             throw new InvalidOperationException("SES email service is not configured.");
         }
 
-        var (subject, html) = ResendEmailService.BuildTemplate(type, data);
+        return new AmazonSimpleEmailServiceV2Client(
+            new BasicAWSCredentials(accessKeyId, secretKey),
+            RegionEndpoint.GetBySystemName(region));
+    }
 
-        var credentials = new BasicAWSCredentials(accessKeyId, secretKey);
-        using var client = new AmazonSimpleEmailServiceV2Client(credentials, RegionEndpoint.GetBySystemName(region));
+    public async Task SendAsync(string toEmail, EmailType type, object data, CancellationToken ct = default)
+    {
+        var (subject, html) = EmailTemplates.BuildTemplate(type, data);
 
         var request = new SendEmailRequest
         {
@@ -53,24 +63,24 @@ public sealed class SesEmailService(
             },
         };
 
-        logger.LogInformation("[Email] Sending {Type} via SES", type);
+        _logger.LogInformation("[Email] Sending {Type} via SES", type);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(15));
 
         try
         {
-            await client.SendEmailAsync(request, cts.Token);
-            logger.LogInformation("[Email] Sent {Type} email successfully", type);
+            await _client.SendEmailAsync(request, cts.Token);
+            _logger.LogInformation("[Email] Sent {Type} email successfully", type);
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("[Email] SES timed out for {Type}", type);
+            _logger.LogWarning("[Email] SES timed out for {Type}", type);
             throw;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Email] Failed to send {Type}", type);
+            _logger.LogError(ex, "[Email] Failed to send {Type}", type);
             throw;
         }
     }
