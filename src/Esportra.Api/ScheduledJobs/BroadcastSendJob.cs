@@ -31,7 +31,7 @@ public sealed class BroadcastSendJob(
         string? TargetSegment,
         string? Channels);
 
-    private sealed record TargetUser(Guid Id, string? Email);
+    private sealed record TargetUser(Guid Id, string? Email, string? Username, string? FullName);
 
     public async Task ExecuteAsync(Guid broadcastId, CancellationToken ct)
     {
@@ -85,6 +85,9 @@ public sealed class BroadcastSendJob(
                 {
                     try
                     {
+                        var title = Personalize(broadcast.Title, user);
+                        var content = Personalize(broadcast.Content, user);
+
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
@@ -94,8 +97,8 @@ public sealed class BroadcastSendJob(
                             new
                             {
                                 userId = user.Id,
-                                title = broadcast.Title,
-                                message = broadcast.Content,
+                                title,
+                                message = content,
                                 link = notifLink,
                                 data = notifData
                             });
@@ -114,8 +117,8 @@ public sealed class BroadcastSendJob(
                                 new
                                 {
                                     type = "broadcast",
-                                    title = broadcast.Title,
-                                    message = broadcast.Content,
+                                    title,
+                                    message = content,
                                     link = notifLink,
                                     data = new
                                     {
@@ -131,8 +134,8 @@ public sealed class BroadcastSendJob(
                             {
                                 await emailService.SendAsync(user.Email, EmailType.Broadcast, new
                                 {
-                                    title = broadcast.Title,
-                                    content = broadcast.Content,
+                                    title,
+                                    content,
                                     broadcastType = broadcast.BroadcastType,
                                     priority = broadcast.Priority
                                 }, ct);
@@ -222,7 +225,8 @@ public sealed class BroadcastSendJob(
         IDbConnection conn, string targetType, Guid[]? targetUserIds,
         string? targetSegment, bool needEmail)
     {
-        var selectFields = needEmail ? "id, email" : "id, NULL::text AS email";
+        var emailCol = needEmail ? "email" : "NULL::text AS email";
+        var selectFields = $"id, {emailCol}, username, full_name";
 
         return targetType switch
         {
@@ -230,11 +234,9 @@ public sealed class BroadcastSendJob(
                 $"SELECT {selectFields} FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
 
             "users" when targetUserIds is { Length: > 0 } ids =>
-                needEmail
-                    ? (await conn.QueryAsync<TargetUser>(
-                        "SELECT id, email FROM profiles WHERE id = ANY(@ids)",
-                        new { ids })).ToList()
-                    : ids.Select(id => new TargetUser(id, null)).ToList(),
+                (await conn.QueryAsync<TargetUser>(
+                    $"SELECT {selectFields} FROM profiles WHERE id = ANY(@ids)",
+                    new { ids })).ToList(),
 
             "segment" when targetSegment is not null =>
                 await GetSegmentUsers(conn, targetSegment, selectFields),
@@ -275,6 +277,98 @@ public sealed class BroadcastSendJob(
         var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
         return (await conn.QueryAsync<TargetUser>(
             $"SELECT {selectFields} FROM profiles p {where} LIMIT 50000", p)).ToList();
+    }
+
+    private static string Personalize(string template, TargetUser user)
+    {
+        var firstName = user.FullName?.Split(' ')[0] ?? user.Username ?? "there";
+        var result = template
+            .Replace("{{first_name}}", firstName, StringComparison.OrdinalIgnoreCase)
+            .Replace("{{username}}", user.Username ?? firstName, StringComparison.OrdinalIgnoreCase)
+            .Replace("{{full_name}}", user.FullName ?? user.Username ?? firstName, StringComparison.OrdinalIgnoreCase);
+        return ResolveEmoji(result);
+    }
+
+    // Slack/Discord-style shortcodes for broadcast content.
+    private static readonly Dictionary<string, string> EmojiShortcodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Status & alerts
+        [":white_check_mark:"] = "✅",
+        [":check:"] = "✅",
+        [":x:"] = "❌",
+        [":warning:"] = "⚠️",
+        [":exclamation:"] = "❗",
+        [":question:"] = "❓",
+        [":info:"] = "ℹ️",
+        [":new:"] = "🆕",
+        [":lock:"] = "🔒",
+        [":unlock:"] = "🔓",
+        // Celebration & rewards
+        [":tada:"] = "🎉",
+        [":party:"] = "🥳",
+        [":clap:"] = "👏",
+        [":sparkles:"] = "✨",
+        [":star:"] = "⭐",
+        [":star2:"] = "🌟",
+        [":trophy:"] = "🏆",
+        [":medal:"] = "🥇",
+        [":2nd_place:"] = "🥈",
+        [":3rd_place:"] = "🥉",
+        [":crown:"] = "👑",
+        [":gem:"] = "💎",
+        [":gift:"] = "🎁",
+        [":100:"] = "💯",
+        [":fire:"] = "🔥",
+        [":boom:"] = "💥",
+        // Gaming & esports
+        [":controller:"] = "🎮",
+        [":joystick:"] = "🕹️",
+        [":dart:"] = "🎯",
+        [":crossed_swords:"] = "⚔️",
+        [":sword:"] = "⚔️",
+        [":shield:"] = "🛡️",
+        [":bow_and_arrow:"] = "🏹",
+        [":skull:"] = "💀",
+        // Reactions
+        [":thumbsup:"] = "👍",
+        [":thumbsdown:"] = "👎",
+        [":wave:"] = "👋",
+        [":muscle:"] = "💪",
+        [":eyes:"] = "👀",
+        [":heart:"] = "❤️",
+        [":rocket:"] = "🚀",
+        [":zap:"] = "⚡",
+        [":lightning:"] = "⚡",
+        // Notifications & comms
+        [":bell:"] = "🔔",
+        [":mega:"] = "📣",
+        [":loudspeaker:"] = "🔊",
+        [":calendar:"] = "📅",
+        [":clock:"] = "🕐",
+        [":hourglass:"] = "⏳",
+        [":moneybag:"] = "💰",
+        [":money:"] = "💰",
+    };
+
+    private static string ResolveEmoji(string text)
+    {
+        if (!text.Contains(':')) return text;
+        var sb = new System.Text.StringBuilder(text.Length);
+        var i = 0;
+        while (i < text.Length)
+        {
+            if (text[i] != ':') { sb.Append(text[i++]); continue; }
+            var end = text.IndexOf(':', i + 1);
+            if (end < 0) { sb.Append(text[i++]); continue; }
+            var candidate = text.Substring(i, end - i + 1);
+            if (EmojiShortcodes.TryGetValue(candidate, out var emoji))
+            {
+                sb.Append(emoji);
+                i = end + 1;
+            }
+            else { sb.Append(text[i++]); }
+        }
+        return sb.ToString();
     }
 
     private static string[]? ParseTextArray(string? pgArray)

@@ -37,6 +37,33 @@ public static class EmailTemplates
     private const string BodyFont = "'Inter','Segoe UI',Arial,sans-serif";
     private const string MonoFont = "'Consolas','Monaco',monospace";
 
+    // &#847; (U+034F COMBINING GRAPHEME JOINER) is the industry-standard preheader
+    // filler (Litmus / Mailchimp / Campaign Monitor). Gmail strips &zwnj; and
+    // collapses consecutive &nbsp; inside hidden divs, but &#847; between spaces
+    // prevents collapsing and is itself counted toward preview length.
+    // 100 triples (&#847;&zwnj;&nbsp;) exceed every known preview window (~140 chars).
+    private const string PreviewFiller =
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
+        "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;";
+
     // ── URL configuration — set via Init() on startup ────────────────────────
     private static string _frontendUrl = "https://esportra.com";
     private static string _supabaseUrl = "https://api.esportra.com";
@@ -98,10 +125,10 @@ public static class EmailTemplates
           <meta name="viewport" content="width=device-width,initial-scale=1" />
           <link rel="preconnect" href="https://fonts.googleapis.com" />
           <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@700;800&family=Inter:wght@400;600&display=swap" rel="stylesheet" />
-          <title>{subject}</title>
+          <title>Esportra</title>
         </head>
         <body style="margin:0;padding:0;background:{PageBg};font-family:{BodyFont};color:{BodyText};">
-          <div style="display:none;max-height:0;overflow:hidden;">{preheader}</div>
+          <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{preheader}{PreviewFiller}</div>
           <table width="100%" cellpadding="0" cellspacing="0" style="background:{PageBg};">
             <tr><td align="center" style="padding:32px 16px;">
               <table width="600" cellpadding="0" cellspacing="0" style="background:{CardBg};border:1px solid {Hairline};overflow:hidden;">
@@ -494,12 +521,14 @@ public static class EmailTemplates
     public static (string Subject, string Html) Broadcast(
         string title, string content, string broadcastType = "announcement", string priority = "normal")
     {
+        // subject is the plain-text API field — must NOT be HTML-encoded.
+        // E() is applied only where the subject appears inside HTML.
         var subject = broadcastType switch
         {
-            "maintenance" => $"Scheduled maintenance: {E(title)}",
-            "system" => $"System notice: {E(title)}",
-            "urgent" when priority is "urgent" or "high" => $"Urgent: {E(title)}",
-            _ => E(title)
+            "maintenance" => $"Scheduled maintenance: {title}",
+            "system" => $"System notice: {title}",
+            "urgent" when priority is "urgent" or "high" => $"Urgent: {title}",
+            _ => title
         };
 
         var meta = new List<string>();
@@ -525,16 +554,20 @@ public static class EmailTemplates
                 """
             : "";
 
+        var preheaderText = string.IsNullOrWhiteSpace(content)
+            ? "New message from Esportra"
+            : E(content.Length > 120 ? content[..120] + "…" : content);
+
         var html = $"""
         <!DOCTYPE html>
         <html lang="en">
         <head>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <title>{subject}</title>
+          <title>Esportra</title>
         </head>
         <body style="margin:0;padding:0;background:{PageBg};font-family:{BodyFont};color:{BodyText};">
-          <div style="display:none;max-height:0;overflow:hidden;">Esportra: {E(title)}</div>
+          <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{preheaderText}{PreviewFiller}</div>
           <table width="100%" cellpadding="0" cellspacing="0" style="background:{PageBg};">
             <tr><td align="center" style="padding:40px 20px;">
               <table width="560" cellpadding="0" cellspacing="0">

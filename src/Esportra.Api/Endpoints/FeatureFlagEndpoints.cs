@@ -89,11 +89,15 @@ public static class FeatureFlagEndpoints
             using var conn = db.CreateConnection();
             var flags = await conn.QueryAsync<dynamic>(
                 """
-                SELECT f.id, f.key, f.name, f.description, f.flag_type,
-                       f.default_value, f.is_enabled, f.created_at, f.updated_at,
-                       p.username AS created_by_name,
-                       (SELECT COUNT(*) FROM feature_flag_rules r WHERE r.flag_id = f.id) AS rule_count,
-                       (SELECT COUNT(*) FROM feature_flag_overrides o WHERE o.flag_id = f.id) AS override_count
+                SELECT f.id, f.key, f.name, f.description,
+                       f.flag_type       AS "flagType",
+                       f.default_value   AS "defaultValue",
+                       f.is_enabled      AS "isEnabled",
+                       f.created_at      AS "createdAt",
+                       f.updated_at      AS "updatedAt",
+                       p.username        AS "createdByName",
+                       (SELECT COUNT(*) FROM feature_flag_rules r WHERE r.flag_id = f.id)      AS "ruleCount",
+                       (SELECT COUNT(*) FROM feature_flag_overrides o WHERE o.flag_id = f.id)  AS "overrideCount"
                 FROM feature_flags f
                 LEFT JOIN profiles p ON p.id = f.created_by
                 ORDER BY f.created_at DESC
@@ -212,7 +216,7 @@ public static class FeatureFlagEndpoints
             using var conn = db.CreateConnection();
             var rules = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, flag_id, priority, conditions, value, percentage, created_at
+                SELECT id, flag_id AS "flagId", priority, conditions, value, percentage, created_at AS "createdAt"
                 FROM feature_flag_rules
                 WHERE flag_id = @id
                 ORDER BY priority DESC
@@ -329,9 +333,10 @@ public static class FeatureFlagEndpoints
             using var conn = db.CreateConnection();
             var overrides = await conn.QueryAsync<dynamic>(
                 """
-                SELECT o.id, o.flag_id, o.user_id, o.value, o.reason, o.expires_at, o.created_at,
-                       p.username, p.email, p.avatar_url,
-                       cb.username AS created_by_name
+                SELECT o.id, o.flag_id AS "flagId", o.user_id AS "userId", o.value, o.reason,
+                       o.expires_at AS "expiresAt", o.created_at AS "createdAt",
+                       p.username, p.email, p.avatar_url AS "avatarUrl",
+                       cb.username AS "createdByName"
                 FROM feature_flag_overrides o
                 JOIN profiles p ON p.id = o.user_id
                 LEFT JOIN profiles cb ON cb.id = o.created_by
