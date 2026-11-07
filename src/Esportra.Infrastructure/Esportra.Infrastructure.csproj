@@ -6,6 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.SimpleEmailV2" Version="4.0.106.10" />
     <PackageReference Include="Dapper" Version="2.1.72" />
     <PackageReference Include="dbup-postgresql" Version="5.0.40" />
     <PackageReference Include="MailKit" Version="4.17.0" />

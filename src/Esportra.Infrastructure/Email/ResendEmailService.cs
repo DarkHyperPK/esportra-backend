@@ -72,7 +72,7 @@ public sealed class ResendEmailService(
         }
     }
 
-    private static (string Subject, string Html) BuildTemplate(EmailType type, object data)
+    internal static (string Subject, string Html) BuildTemplate(EmailType type, object data)
     {
         var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
             JsonSerializer.Serialize(data)) ?? [];

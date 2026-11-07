@@ -307,10 +307,9 @@ builder.Services.AddCors(opts =>
 });
 
 // ── Email service ────────────────────────────────────────────────────────────
-// Singleton: no per-request state; IHttpClientFactory (singleton) is injected so
-// the service is safe to use from fire-and-forget tasks that outlive the hub scope.
-builder.Services.AddHttpClient("Resend");
-builder.Services.AddSingleton<IEmailService, ResendEmailService>();
+// SesEmailService creates its own AmazonSESv2Client per send (cheap, stateless).
+// Registered as singleton; IConfiguration is singleton-safe.
+builder.Services.AddSingleton<IEmailService, SesEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
