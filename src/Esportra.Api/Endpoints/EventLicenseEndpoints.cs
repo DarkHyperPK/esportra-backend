@@ -118,9 +118,9 @@ public static class EventLicenseEndpoints
 
             return Results.Ok(new
             {
-                hasOrganizerPro  = lic == default ? false : lic.HasPro,
-                bracketTier      = lic == default ? "free" : lic.Tier,
-                bracketMaxTeams  = lic == default ? 32 : lic.MaxTeams,
+                hasOrganizerPro = lic == default ? false : lic.HasPro,
+                bracketTier = lic == default ? "free" : lic.Tier,
+                bracketMaxTeams = lic == default ? 32 : lic.MaxTeams,
             });
         }).RequireAuthorization("Admin");
 
@@ -163,8 +163,8 @@ public static class EventLicenseEndpoints
                     details = JsonSerializer.Serialize(new
                     {
                         tournament_id = id,
-                        enabled       = req.Enabled,
-                        bracket_tier  = req.BracketTier,
+                        enabled = req.Enabled,
+                        bracket_tier = req.BracketTier,
                         actor_user_id = userCtx.UserIdGuid,
                     }),
                 });

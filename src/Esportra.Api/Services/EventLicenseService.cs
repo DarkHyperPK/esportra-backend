@@ -248,7 +248,7 @@ public class EventLicenseService(
 
     internal static int ResolveBracketMaxTeams(string tier) => tier switch
     {
-        "<=64"  => 64,
+        "<=64" => 64,
         "<=128" => 128,
         "<=256" => 256,
         "<=512" => 512,
