@@ -181,6 +181,59 @@ public class EventLicenseService(
         await cache.RemoveAsync($"{CacheKeyPrefix}{tournamentId}", ct);
     }
 
+    // ── BE-10+: UpsertLicenseAsync ──────────────────────────────────────────
+
+    /// <summary>
+    /// Admin operation: set the bracket tier and Organizer Pro flag together.
+    /// UPSERTs the license row. Invalidates cache after write.
+    /// </summary>
+    public async Task UpsertLicenseAsync(
+        Guid tournamentId,
+        string bracketTier,
+        bool hasOrganizerPro,
+        CancellationToken ct = default)
+    {
+        var maxTeams = ResolveBracketMaxTeams(bracketTier);
+        using var conn = db.CreateConnection();
+
+        var tournamentMeta = await conn.QuerySingleOrDefaultAsync<(Guid OrgId, Guid UserId)?>(
+            """
+            SELECT organization_id AS OrgId, organizer_id AS UserId
+            FROM tournaments
+            WHERE id = @tournamentId
+            """,
+            new { tournamentId });
+
+        if (tournamentMeta is null)
+            throw new InvalidOperationException($"Tournament {tournamentId} not found.");
+
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO event_licenses
+                (tournament_id, user_id, organization_id, bracket_tier, bracket_max_teams,
+                 has_organizer_pro, is_free_quota, status)
+            VALUES
+                (@tournamentId, @userId, @orgId, @tier, @maxTeams,
+                 @hasOrganizerPro, false, 'active')
+            ON CONFLICT (tournament_id)
+            DO UPDATE SET
+                bracket_tier      = @tier,
+                bracket_max_teams = @maxTeams,
+                has_organizer_pro = @hasOrganizerPro
+            """,
+            new
+            {
+                tournamentId,
+                userId = tournamentMeta.Value.UserId,
+                orgId = tournamentMeta.Value.OrgId,
+                tier = bracketTier,
+                maxTeams,
+                hasOrganizerPro,
+            });
+
+        await cache.RemoveAsync($"{CacheKeyPrefix}{tournamentId}", ct);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     internal static string ResolveBracketTier(int maxTeams) => maxTeams switch
@@ -191,5 +244,15 @@ public class EventLicenseService(
         <= 256 => "<=256",
         <= 512 => "<=512",
         _ => "custom",
+    };
+
+    internal static int ResolveBracketMaxTeams(string tier) => tier switch
+    {
+        "<=64"  => 64,
+        "<=128" => 128,
+        "<=256" => 256,
+        "<=512" => 512,
+        "custom" => 0,
+        _ => 32,
     };
 }

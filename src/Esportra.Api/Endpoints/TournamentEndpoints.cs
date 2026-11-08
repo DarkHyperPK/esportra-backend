@@ -845,14 +845,20 @@ public static class TournamentEndpoints
                 new { id });
             if (existingTournament is null) return Results.NotFound();
 
-            // Organizer Pro gate: increasing max_teams beyond 32 requires has_organizer_pro.
-            if (req.MaxTeams > 32 && !userCtx.IsSuperAdmin)
+            // Bracket tier gate: max_teams must not exceed the license's purchased bracket_max_teams.
+            // MaxTeams == 0 means "no limit" — only the custom tier allows it.
+            // Null MaxTeams means "not changing" — skip the gate.
+            if (req.MaxTeams.HasValue && !userCtx.IsSuperAdmin)
             {
-                var hasPro = await conn.ExecuteScalarAsync<bool>(
-                    "SELECT COALESCE((SELECT has_organizer_pro FROM event_licenses WHERE tournament_id = @id LIMIT 1), FALSE)",
-                    new { id });
-                if (!hasPro)
-                    return Results.Json(new { error = "bracket_upgrade_required" }, statusCode: 402);
+                var license = await licenseService.GetForTournamentAsync(id, ct);
+                if (license is not null) // null = legacy/grandfathered, allow anything
+                {
+                    var isCustom = license.BracketTier == "custom";
+                    if (req.MaxTeams == 0 && !isCustom)
+                        return Results.Json(new { error = "bracket_upgrade_required" }, statusCode: 402);
+                    if (req.MaxTeams > 0 && !isCustom && req.MaxTeams > license.BracketMaxTeams)
+                        return Results.Json(new { error = "bracket_upgrade_required" }, statusCode: 402);
+                }
             }
 
             var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, (object)existingTournament, gameCatalog, userCtx.IsSuperAdmin);
@@ -884,7 +890,7 @@ public static class TournamentEndpoints
                     format               = @format,
                     game_mode            = @gameMode,
                     status               = CASE WHEN @status IS NOT NULL THEN @status::tournament_status ELSE status END,
-                    max_teams            = COALESCE(@maxTeams, max_teams),
+                    max_teams            = CASE WHEN @maxTeams = 0 THEN NULL WHEN @maxTeams IS NOT NULL THEN @maxTeams ELSE max_teams END,
                     team_size            = @teamSize,
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
