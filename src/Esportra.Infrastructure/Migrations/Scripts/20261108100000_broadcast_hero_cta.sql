@@ -1,0 +1,3 @@
+ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS hero_image_url TEXT;
+ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS cta_url TEXT;
+ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS cta_label TEXT;

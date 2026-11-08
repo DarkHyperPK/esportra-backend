@@ -29,7 +29,10 @@ public sealed class BroadcastSendJob(
         string TargetType,
         string? TargetUserIds,
         string? TargetSegment,
-        string? Channels);
+        string? Channels,
+        string? HeroImageUrl,
+        string? CtaUrl,
+        string? CtaLabel);
 
     private sealed record TargetUser(Guid Id, string? Email, string? Username, string? FullName);
 
@@ -45,7 +48,7 @@ public sealed class BroadcastSendJob(
                 """
                 SELECT id, title, content, broadcast_type, priority,
                        target_type, target_user_ids::text, target_segment,
-                       channels::text
+                       channels::text, hero_image_url, cta_url, cta_label
                 FROM broadcasts
                 WHERE id = @broadcastId AND status = 'sending'
                 """,
@@ -137,7 +140,10 @@ public sealed class BroadcastSendJob(
                                     title,
                                     content,
                                     broadcastType = broadcast.BroadcastType,
-                                    priority = broadcast.Priority
+                                    priority = broadcast.Priority,
+                                    heroImageUrl = broadcast.HeroImageUrl,
+                                    ctaUrl = broadcast.CtaUrl,
+                                    ctaLabel = broadcast.CtaLabel
                                 }, ct);
 
                                 await conn.ExecuteAsync(
