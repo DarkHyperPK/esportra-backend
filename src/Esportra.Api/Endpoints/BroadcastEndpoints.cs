@@ -73,10 +73,12 @@ public static class BroadcastEndpoints
                 """
                 INSERT INTO broadcasts (title, content, content_html, broadcast_type, priority,
                                         target_type, target_segment, target_user_ids, channels,
-                                        status, scheduled_at, created_by)
+                                        status, scheduled_at, created_by,
+                                        hero_image_url, cta_url, cta_label)
                 VALUES (@title, @content, @contentHtml, @broadcastType, @priority,
                         @targetType, @targetSegment::jsonb, @targetUserIds, @channels,
-                        @status, @scheduledAt, @createdBy)
+                        @status, @scheduledAt, @createdBy,
+                        @heroImageUrl, @ctaUrl, @ctaLabel)
                 RETURNING id
                 """,
                 new
@@ -94,7 +96,10 @@ public static class BroadcastEndpoints
                     channels = req.Channels ?? new[] { "in_app" },
                     status = req.ScheduledAt.HasValue ? "scheduled" : "draft",
                     scheduledAt = req.ScheduledAt,
-                    createdBy = userCtx.UserIdGuid
+                    createdBy = userCtx.UserIdGuid,
+                    heroImageUrl = req.HeroImageUrl,
+                    ctaUrl = req.CtaUrl,
+                    ctaLabel = req.CtaLabel
                 });
 
             return Results.Ok(new { id, success = true });
@@ -146,6 +151,9 @@ public static class BroadcastEndpoints
                 sets.Add("status = 'scheduled'");
                 p.Add("scheduledAt", req.ScheduledAt.Value);
             }
+            if (req.HeroImageUrl is not null) { sets.Add("hero_image_url = @heroImageUrl"); p.Add("heroImageUrl", req.HeroImageUrl); }
+            if (req.CtaUrl is not null) { sets.Add("cta_url = @ctaUrl"); p.Add("ctaUrl", req.CtaUrl); }
+            if (req.CtaLabel is not null) { sets.Add("cta_label = @ctaLabel"); p.Add("ctaLabel", req.CtaLabel); }
 
             await conn.ExecuteAsync(
                 $"UPDATE broadcasts SET {string.Join(", ", sets)} WHERE id = @id", p);
@@ -396,7 +404,10 @@ public sealed record CreateBroadcastRequest(
     [property: JsonPropertyName("target_segment")] JsonElement? TargetSegment = null,
     [property: JsonPropertyName("target_user_ids")] Guid[]? TargetUserIds = null,
     string[]? Channels = null,
-    [property: JsonPropertyName("scheduled_at")] DateTimeOffset? ScheduledAt = null);
+    [property: JsonPropertyName("scheduled_at")] DateTimeOffset? ScheduledAt = null,
+    [property: JsonPropertyName("hero_image_url")] string? HeroImageUrl = null,
+    [property: JsonPropertyName("cta_url")] string? CtaUrl = null,
+    [property: JsonPropertyName("cta_label")] string? CtaLabel = null);
 
 public sealed record UpdateBroadcastRequest(
     string? Title = null,
@@ -408,7 +419,10 @@ public sealed record UpdateBroadcastRequest(
     [property: JsonPropertyName("target_segment")] JsonElement? TargetSegment = null,
     [property: JsonPropertyName("target_user_ids")] Guid[]? TargetUserIds = null,
     string[]? Channels = null,
-    [property: JsonPropertyName("scheduled_at")] DateTimeOffset? ScheduledAt = null);
+    [property: JsonPropertyName("scheduled_at")] DateTimeOffset? ScheduledAt = null,
+    [property: JsonPropertyName("hero_image_url")] string? HeroImageUrl = null,
+    [property: JsonPropertyName("cta_url")] string? CtaUrl = null,
+    [property: JsonPropertyName("cta_label")] string? CtaLabel = null);
 
 public sealed record CreateBroadcastTemplateRequest(
     string Name,

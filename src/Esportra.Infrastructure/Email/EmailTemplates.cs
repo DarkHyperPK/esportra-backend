@@ -64,6 +64,16 @@ public static class EmailTemplates
         "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;" +
         "&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;";
 
+    // Built with concatenation (not raw interpolation) to avoid {{ }} escaping in CSS braces.
+    private static readonly string DarkModeStyle =
+        "<meta name=\"color-scheme\" content=\"light dark\" />" +
+        "<meta name=\"supported-color-schemes\" content=\"light dark\" />" +
+        "<style>:root { color-scheme: light dark; } " +
+        "@media (prefers-color-scheme: dark) { " +
+        ".email-bg { background-color: " + PageBg + " !important; color: " + BodyText + " !important; } " +
+        ".card-bg { background-color: " + CardBg + " !important; } }" +
+        "</style>";
+
     // ── URL configuration — set via Init() on startup ────────────────────────
     private static string _frontendUrl = "https://esportra.com";
     private static string _supabaseUrl = "https://api.esportra.com";
@@ -85,16 +95,7 @@ public static class EmailTemplates
     private static string LogoRow() => $"""
                 <tr>
                   <td style="padding:16px 28px;">
-                    <table width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td align="left">
-                          <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="72" style="display:inline-block;border:0;outline:none;" />
-                        </td>
-                        <td align="right">
-                          <span style="{Mono(9)}color:{SubtleText};">// ESPORTRA</span>
-                        </td>
-                      </tr>
-                    </table>
+                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="72" style="display:inline-block;border:0;outline:none;" />
                   </td>
                 </tr>
                 <tr><td style="height:1px;line-height:1px;font-size:0;background:{Rose};">&nbsp;</td></tr>
@@ -123,15 +124,16 @@ public static class EmailTemplates
         <head>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
+          {DarkModeStyle}
           <link rel="preconnect" href="https://fonts.googleapis.com" />
           <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@700;800&family=Inter:wght@400;600&display=swap" rel="stylesheet" />
           <title>Esportra</title>
         </head>
-        <body style="margin:0;padding:0;background:{PageBg};font-family:{BodyFont};color:{BodyText};">
+        <body class="email-bg" style="margin:0;padding:0;background-color:{PageBg};font-family:{BodyFont};color:{BodyText};">
           <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{preheader}{PreviewFiller}</div>
-          <table width="100%" cellpadding="0" cellspacing="0" style="background:{PageBg};">
+          <table width="100%" cellpadding="0" cellspacing="0" class="email-bg" style="background-color:{PageBg};">
             <tr><td align="center" style="padding:32px 16px;">
-              <table width="600" cellpadding="0" cellspacing="0" style="background:{CardBg};border:1px solid {Hairline};overflow:hidden;">
+              <table width="600" cellpadding="0" cellspacing="0" class="card-bg" style="background-color:{CardBg};border:1px solid {Hairline};overflow:hidden;">
                 {(string.IsNullOrWhiteSpace(headerImageUrl)
                     ? LogoRow()
                     : LogoRow() + GameBannerRow(headerImageUrl))}
@@ -519,10 +521,9 @@ public static class EmailTemplates
     // team sign-off, single support line.
 
     public static (string Subject, string Html) Broadcast(
-        string title, string content, string broadcastType = "announcement", string priority = "normal")
+        string title, string content, string broadcastType = "announcement", string priority = "normal",
+        string? heroImageUrl = null, string? ctaUrl = null, string? ctaLabel = null)
     {
-        // subject is the plain-text API field — must NOT be HTML-encoded.
-        // E() is applied only where the subject appears inside HTML.
         var subject = broadcastType switch
         {
             "maintenance" => $"Scheduled maintenance: {title}",
@@ -531,6 +532,47 @@ public static class EmailTemplates
             _ => title
         };
 
+        if (!string.IsNullOrWhiteSpace(heroImageUrl))
+            return BroadcastRich(subject, title, content, heroImageUrl, ctaUrl, ctaLabel);
+
+        return BroadcastPlain(subject, title, content, broadcastType, priority, ctaUrl, ctaLabel);
+    }
+
+    private static (string Subject, string Html) BroadcastRich(
+        string subject, string title, string content,
+        string heroImageUrl, string? ctaUrl, string? ctaLabel)
+    {
+        var paragraphs = content
+            .Replace("\r\n", "\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var bodyHtml = new StringBuilder();
+        foreach (var para in paragraphs)
+            bodyHtml.Append(P(E(para)));
+
+        var ctaHtml = !string.IsNullOrWhiteSpace(ctaUrl)
+            ? Btn(ctaUrl, string.IsNullOrWhiteSpace(ctaLabel) ? "Learn More" : ctaLabel)
+            : "";
+
+        var preheader = string.IsNullOrWhiteSpace(content)
+            ? "New message from Esportra"
+            : E(content.Length > 120 ? content[..120] + "…" : content);
+
+        var html = Wrap(preheader, subject, $"""
+            {Eyebrow("Esportra update")}
+            {H1(E(title))}
+            {bodyHtml}
+            {ctaHtml}
+        """, heroImageUrl);
+
+        return (subject, html);
+    }
+
+    private static (string Subject, string Html) BroadcastPlain(
+        string subject, string title, string content,
+        string broadcastType, string priority,
+        string? ctaUrl, string? ctaLabel)
+    {
         var meta = new List<string>();
         var typeLabel = GetBroadcastTag(broadcastType).Label;
         if (!string.Equals(typeLabel, "Announcement", StringComparison.OrdinalIgnoreCase))
@@ -554,6 +596,14 @@ public static class EmailTemplates
                 """
             : "";
 
+        var ctaRow = !string.IsNullOrWhiteSpace(ctaUrl)
+            ? $"""
+                <tr><td style="padding-top:16px;">
+                  {Btn(ctaUrl, string.IsNullOrWhiteSpace(ctaLabel) ? "Learn More" : ctaLabel)}
+                </td></tr>
+                """
+            : "";
+
         var preheaderText = string.IsNullOrWhiteSpace(content)
             ? "New message from Esportra"
             : E(content.Length > 120 ? content[..120] + "…" : content);
@@ -564,11 +614,12 @@ public static class EmailTemplates
         <head>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
+          {DarkModeStyle}
           <title>Esportra</title>
         </head>
-        <body style="margin:0;padding:0;background:{PageBg};font-family:{BodyFont};color:{BodyText};">
+        <body class="email-bg" style="margin:0;padding:0;background-color:{PageBg};font-family:{BodyFont};color:{BodyText};">
           <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{preheaderText}{PreviewFiller}</div>
-          <table width="100%" cellpadding="0" cellspacing="0" style="background:{PageBg};">
+          <table width="100%" cellpadding="0" cellspacing="0" class="email-bg" style="background-color:{PageBg};">
             <tr><td align="center" style="padding:40px 20px;">
               <table width="560" cellpadding="0" cellspacing="0">
                 <tr><td style="padding-bottom:28px;">
@@ -579,6 +630,7 @@ public static class EmailTemplates
                 </td></tr>
                 {metaRow}
                 <tr><td>{bodyHtml}</td></tr>
+                {ctaRow}
                 <tr><td style="padding-top:20px;">
                   <p style="margin:0;font-size:14px;color:{MutedText};">&mdash; The Esportra Team</p>
                   <p style="margin:16px 0 0;font-size:12px;color:{SubtleText};">Questions? <a href="mailto:support@esportra.com" style="color:{RoseLight};text-decoration:none;">support@esportra.com</a></p>
@@ -724,7 +776,12 @@ public static class EmailTemplates
                     Get("captainName"), Get("tournamentName"),
                     Get("code"), Get("tournamentUrl"), Get("expiryDate"), Get("gameHeaderUrl")),
             EmailType.Broadcast =>
-                Broadcast(Get("title"), Get("content"), Get("broadcastType", "announcement"), Get("priority", "normal")),
+                Broadcast(
+                    Get("title"), Get("content"),
+                    Get("broadcastType", "announcement"), Get("priority", "normal"),
+                    heroImageUrl: Get("heroImageUrl") is { Length: > 0 } h ? h : null,
+                    ctaUrl: Get("ctaUrl") is { Length: > 0 } cu ? cu : null,
+                    ctaLabel: Get("ctaLabel") is { Length: > 0 } cl ? cl : null),
             EmailType.MatchChatMessage =>
                 MatchChatMessage(
                     Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl"),

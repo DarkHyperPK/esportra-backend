@@ -24,5 +24,5 @@ runs:
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
         git fetch origin "$DEPLOY_BRANCH" 2>/dev/null || true
-        git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+        git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
           "HEAD:refs/heads/${DEPLOY_BRANCH}"
