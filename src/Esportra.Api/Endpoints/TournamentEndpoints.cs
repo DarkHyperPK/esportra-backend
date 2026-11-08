@@ -889,7 +889,7 @@ public static class TournamentEndpoints
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
                     start_date           = COALESCE(@startDate, start_date),
-                    end_date             = COALESCE(@endDate, end_date),
+                    end_date             = CASE WHEN @clearEndDate THEN NULL ELSE COALESCE(@endDate, end_date) END,
                     registration_deadline = COALESCE(@registrationDeadline, registration_deadline),
                     banner_url           = COALESCE(@bannerUrl, banner_url),
                     logo_url             = COALESCE(@logoUrl, logo_url),
@@ -955,6 +955,7 @@ public static class TournamentEndpoints
                     serverRegion = req.ServerRegion,
                     venueAddress = req.VenueAddress,
                     clearVenueAddress = req.ClearVenueAddress,
+                    clearEndDate = req.ClearEndDate,
                     currency = req.Currency,
                     settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.DiscordLinkCount),
                     accountLinkPatch = BuildAccountLinkPatch(req.AssistedReportingEnabled, req.RequiredAccountLinks),
@@ -5605,7 +5606,7 @@ public static class TournamentEndpoints
 
     // ── POST /api/tournaments — helpers ──────────────────────────────────────────
 
-    private sealed record TournamentCreateDates(DateTime EndDate, DateTime RegistrationDeadline, string Status, int InviteExpiryDays);
+    private sealed record TournamentCreateDates(DateTime? EndDate, DateTime RegistrationDeadline, string Status, int InviteExpiryDays);
     private sealed record TournamentCreateDefaults(bool IsPublic, bool CheckInRequired, bool AutoRemoveUnchecked, decimal EntryFee, decimal PrizePool, string Currency, Guid? VenueId, string PayoutMethod);
     private sealed record StageInsertParams(Guid TournamentId, string Name, string Format, int StageOrder, int BestOf, string BoMode, string? RoundBoOverrides, int? Capacity, int? AdvancementCount, string? Config, DateTimeOffset? StartsAt, DateTimeOffset? EndsAt);
 
@@ -5640,9 +5641,12 @@ public static class TournamentEndpoints
                 return $"Discord link count must be between 0 and {maxAllowed}.";
         }
 
-        var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(
-            req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
-        if (dateOrderError is not null) return dateOrderError;
+        if (req.EndDate.HasValue)
+        {
+            var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(
+                req.StartDate, req.EndDate.Value);
+            if (dateOrderError is not null) return dateOrderError;
+        }
 
         return TournamentTimelineValidator.ValidateRegistrationDeadline(
             req.RegistrationDeadline ?? req.StartDate.AddDays(-1), req.StartDate);
@@ -5667,7 +5671,7 @@ public static class TournamentEndpoints
 
     private static TournamentCreateDates NormalizeTournamentDates(CreateTournamentRequest req)
     {
-        var endDate = req.EndDate ?? req.StartDate.AddHours(2);
+        var endDate = req.EndDate;
         var regDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1);
         var status = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft";
         var inviteExpiryDays = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365);
@@ -7276,7 +7280,8 @@ public sealed record UpdateTournamentRequest(
     int? DiscordLinkCount = null,
     string? ServerRegion = null,
     string? VenueAddress = null,
-    bool ClearVenueAddress = false);
+    bool ClearVenueAddress = false,
+    bool ClearEndDate = false);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,

@@ -862,6 +862,38 @@ public static class MatchSystemEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/tournaments/{tournamentId}/schedule (public) ──────────
+        app.MapGet("/api/tournaments/{tournamentId}/schedule", async (
+            Guid tournamentId,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                $"""
+                SELECT
+                    s.id AS stage_id, s.name AS stage_name, s.stage_order, s.format,
+                    m.id, m.match_number, m.round_index, m.bracket_type,
+                    m.scheduled_time, m.status,
+                    {BracketTeamResolutionSql.Team1Columns},
+                    {BracketTeamResolutionSql.Team2Columns}
+                FROM tournament_stages s
+                JOIN LATERAL (
+                    SELECT id FROM brkt_versions
+                    WHERE stage_id = s.id AND status IN ('draft', 'active', 'completed')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ) v ON true
+                JOIN brkt_matches m ON m.version_id = v.id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
+                WHERE s.tournament_id = @tournamentId
+                ORDER BY s.stage_order, m.scheduled_time NULLS LAST, m.round_index, m.match_number
+                """,
+                new { tournamentId });
+            return Results.Ok(rows);
+        });
+
         // ── GET /api/stages/{stageId}/matches ───────────────────────────────
         app.MapGet("/api/stages/{stageId}/matches", async (
             Guid stageId,

@@ -6246,7 +6246,7 @@ CREATE TABLE public.tournaments (
     prize_pool numeric(10,2) DEFAULT 0,
     prize_distribution jsonb DEFAULT '[]'::jsonb,
     start_date timestamp with time zone NOT NULL,
-    end_date timestamp with time zone NOT NULL,
+    end_date timestamp with time zone,
     registration_deadline timestamp with time zone NOT NULL,
     check_in_time timestamp with time zone,
     status public.tournament_status DEFAULT 'draft'::public.tournament_status,
