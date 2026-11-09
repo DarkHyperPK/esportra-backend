@@ -2173,8 +2173,9 @@ public static class TeamEndpoints
             """
             SELECT
                 EXISTS(
-                    SELECT 1 FROM public.scrim_listings
-                    WHERE team_id = @teamId AND status = 'open'
+                    SELECT 1 FROM public.scrim_sessions
+                    WHERE (team1_id = @teamId OR team2_id = @teamId)
+                      AND status IN ('scheduled', 'in_progress')
                 )
                 OR EXISTS(
                     SELECT 1 FROM public.tournament_participants tp
