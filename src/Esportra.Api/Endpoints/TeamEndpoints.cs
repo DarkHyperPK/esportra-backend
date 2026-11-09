@@ -804,7 +804,7 @@ public static class TeamEndpoints
 
                 // Step 4: update active tournament registrations only (non-critical)
                 await conn.ExecuteAsync(
-                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('completed', 'disqualified', 'cancelled')",
+                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('eliminated', 'disqualified', 'cancelled', 'withdrawal_pending')",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
                 // Notify atomically with the promotion.
@@ -2177,10 +2177,12 @@ public static class TeamEndpoints
                     WHERE team_id = @teamId AND status = 'open'
                 )
                 OR EXISTS(
-                    SELECT 1 FROM public.tournament_participants
-                    WHERE team_id = @teamId
-                      AND participant_type = 'team'
-                      AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                    SELECT 1 FROM public.tournament_participants tp
+                    JOIN public.tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.team_id = @teamId
+                      AND tp.participant_type = 'team'
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending')
+                      AND t.status NOT IN ('completed', 'cancelled')
                 )
             """,
             new { teamId });

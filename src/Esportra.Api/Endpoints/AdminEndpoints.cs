@@ -3543,7 +3543,7 @@ public static class AdminEndpoints
                     new { id, newCaptainId }, tx);
 
                 await conn.ExecuteAsync(
-                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('completed', 'disqualified', 'cancelled')",
+                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('eliminated', 'disqualified', 'cancelled', 'withdrawal_pending')",
                     new { id, newCaptainId }, tx);
 
                 // Notify atomically with the promotion — an admin acted, so BOTH the
