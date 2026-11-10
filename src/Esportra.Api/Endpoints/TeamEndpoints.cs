@@ -581,8 +581,9 @@ public static class TeamEndpoints
             if (isCaptain)
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
-            if (await IsRosterLockedAsync(conn, id))
-                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
+            var rosterLockReason = await GetRosterLockReasonAsync(conn, id);
+            if (rosterLockReason is not null)
+                return Results.Conflict(new { error = $"Roster is locked. {rosterLockReason} Resolve this before changing the roster." });
 
             using var tx = conn.BeginTransaction();
             List<Guid> memberIds;
@@ -665,10 +666,11 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
-            if (await IsRosterLockedAsync(conn, id))
-                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
+            var rosterLockReason = await GetRosterLockReasonAsync(conn, id);
+            if (rosterLockReason is not null)
+                return Results.Conflict(new { error = $"Roster is locked. {rosterLockReason} Resolve this before changing the roster." });
 
             var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT owner_id FROM teams WHERE id = @id", new { id });
@@ -2176,29 +2178,43 @@ public static class TeamEndpoints
             throw new UnauthorizedAccessException("Only a team captain can perform this action.");
     }
 
-    /// <summary>
-    /// Returns true when the team has open scrim listings or an active tournament registration.
-    /// Roster changes are blocked while either condition holds to prevent manipulation.
-    /// </summary>
-    private static async Task<bool> IsRosterLockedAsync(IDbConnection conn, Guid teamId)
+    /// <summary>Throws 403 if the user is neither the team captain nor the team owner.</summary>
+    private static async Task AssertCaptainOrOwner(IDbConnection conn, Guid teamId, Guid userId)
     {
-        return await conn.ExecuteScalarAsync<bool>(
+        var allowed = await conn.QuerySingleOrDefaultAsync<bool>(
             """
-            SELECT
-                EXISTS(
-                    SELECT 1 FROM public.scrim_sessions
-                    WHERE (team1_id = @teamId OR team2_id = @teamId)
-                      AND status IN ('scheduled', 'in_progress')
-                )
-                OR EXISTS(
-                    SELECT 1 FROM public.tournament_participants tp
-                    JOIN public.tournaments t ON t.id = tp.tournament_id
-                    WHERE tp.team_id = @teamId
-                      AND tp.participant_type = 'team'
-                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending')
-                      AND t.status NOT IN ('completed', 'cancelled')
-                      AND (t.end_date IS NULL OR t.end_date >= NOW() - INTERVAL '24 hours')
-                )
+            SELECT EXISTS(
+                SELECT 1 FROM teams WHERE id = @teamId AND (owner_id = @userId OR captain_id = @userId)
+            )
+            """,
+            new { teamId, userId });
+        if (!allowed)
+            throw new UnauthorizedAccessException("Only the team captain or owner can perform this action.");
+    }
+
+    private static async Task<string?> GetRosterLockReasonAsync(IDbConnection conn, Guid teamId)
+    {
+        var scrim = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT 'You have an active scrim match (' || COALESCE(ss.id::text, 'unknown') || ') in status: ' || ss.status
+            FROM public.scrim_sessions ss
+            WHERE (ss.team1_id = @teamId OR ss.team2_id = @teamId)
+              AND ss.status IN ('scheduled', 'in_progress')
+            LIMIT 1
+            """,
+            new { teamId });
+        if (scrim is not null) return scrim;
+
+        return await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT 'You are registered in tournament "' || t.name || '" (status: ' || t.status || ').'
+            FROM public.tournament_participants tp
+            JOIN public.tournaments t ON t.id = tp.tournament_id
+            WHERE tp.team_id = @teamId
+              AND tp.participant_type = 'team'
+              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending', 'eliminated')
+              AND t.status IN ('check_in', 'ongoing')
+            LIMIT 1
             """,
             new { teamId });
     }
