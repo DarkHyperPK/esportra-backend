@@ -304,6 +304,84 @@ public static class VetoEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/veto/{matchId}/toss-choice ─────────────────────────────
+        // Toss winner chooses to go first or defer to opponent.
+        app.MapPost("/api/veto/{matchId}/toss-choice", async (
+            Guid matchId,
+            [FromBody] VetoTossChoiceRequest req,
+            HttpContext ctx,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var existing = await veto.GetAsync(matchId, ct);
+            if (existing is null) return Results.NotFound();
+
+            // Resolve the caller's team ID
+            var callerTeamId = await veto.ResolveCallerTeamIdAsync(
+                userCtx.UserIdGuid, existing.Team1Id, existing.Team2Id, existing.TournamentId, ct);
+            if (callerTeamId is null)
+                return Results.Json(new { error = "You are not a participant in this veto." }, statusCode: 403);
+
+            try
+            {
+                var updated = await veto.TossChoiceAsync(matchId, callerTeamId.Value, req.GoFirst, ct);
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
+                    .SendAsync(VetoHubEvents.StateSync, updated, ct);
+                return Results.Ok(updated);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Results.Json(new { error = "Only the toss winner can make this choice." }, statusCode: 403);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/veto/token/{token}/toss-choice ─────────────────────────
+        // Token-link captain makes the toss choice (same mechanic as above).
+        app.MapPost("/api/veto/token/{token}/toss-choice", async (
+            string token,
+            [FromBody] VetoTossChoiceRequest req,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var tokenContext = await ResolveTokenContextAsync(conn, token);
+            if (tokenContext is null) return Results.NotFound(new { error = "Map veto not found." });
+
+            var state = await veto.GetAsync(tokenContext.MatchId, ct);
+            if (state is null) return Results.NotFound(new { error = "Map veto not found." });
+
+            // Determine the team ID this token represents
+            var callerTeamId = tokenContext.TeamSide == "team1" ? state.Team1Id : state.Team2Id;
+            if (callerTeamId is null)
+                return Results.Json(new { error = "Team not assigned." }, statusCode: 400);
+
+            try
+            {
+                var updated = await veto.TossChoiceAsync(tokenContext.MatchId, callerTeamId.Value, req.GoFirst, ct);
+                await hub.Clients.Group(VetoHub.VetoGroup(tokenContext.MatchId.ToString()))
+                    .SendAsync(VetoHubEvents.StateSync, updated, ct);
+                return Results.Ok(updated);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Results.Json(new { error = "Only the toss winner can make this choice." }, statusCode: 403);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
         // ── PUT /api/veto/{matchId}/update ───────────────────────────────────
         // S2: Organizer-only (this is a raw state override, not a normal action)
         app.MapPut("/api/veto/{matchId}/update", async (
@@ -772,6 +850,8 @@ public sealed record VetoInitRequest(
     string? Game = "valorant");
 
 public sealed record VetoActionRequest(string MapId);
+
+public sealed record VetoTossChoiceRequest(bool GoFirst);
 
 public sealed record VetoPickSideRequest(string MapId, string Side);
 

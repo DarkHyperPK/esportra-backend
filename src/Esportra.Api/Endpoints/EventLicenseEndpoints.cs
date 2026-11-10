@@ -101,15 +101,27 @@ public static class EventLicenseEndpoints
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleOrDefaultAsync<(bool Exists, bool HasPro)>(
+            var exists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id)", new { id });
+            if (!exists) return Results.NotFound();
+
+            var lic = await conn.QuerySingleOrDefaultAsync<(bool HasPro, string Tier, int MaxTeams)>(
                 """
-                SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id) AS Exists,
-                       COALESCE((SELECT has_organizer_pro FROM event_licenses
-                                 WHERE tournament_id = @id LIMIT 1), FALSE) AS HasPro
+                SELECT has_organizer_pro AS HasPro,
+                       bracket_tier      AS Tier,
+                       bracket_max_teams AS MaxTeams
+                FROM event_licenses
+                WHERE tournament_id = @id
+                LIMIT 1
                 """,
                 new { id });
-            if (!row.Exists) return Results.NotFound();
-            return Results.Ok(new { hasOrganizerPro = row.HasPro });
+
+            return Results.Ok(new
+            {
+                hasOrganizerPro = lic == default ? false : lic.HasPro,
+                bracketTier = lic == default ? "free" : lic.Tier,
+                bracketMaxTeams = lic == default ? 32 : lic.MaxTeams,
+            });
         }).RequireAuthorization("Admin");
 
         // ── BE-10: POST /api/admin/tournaments/{id}/organizer-pro ────────────
@@ -132,7 +144,10 @@ public static class EventLicenseEndpoints
             if (!tournamentExists)
                 return Results.NotFound(new { error = "Tournament not found." });
 
-            await licenseService.UpsertOrganizerProAsync(id, req.Enabled, ct);
+            if (req.BracketTier is not null)
+                await licenseService.UpsertLicenseAsync(id, req.BracketTier, req.Enabled ?? false, ct);
+            else
+                await licenseService.UpsertOrganizerProAsync(id, req.Enabled ?? false, ct);
 
             await conn.ExecuteAsync(
                 """
@@ -149,13 +164,14 @@ public static class EventLicenseEndpoints
                     {
                         tournament_id = id,
                         enabled = req.Enabled,
+                        bracket_tier = req.BracketTier,
                         actor_user_id = userCtx.UserIdGuid,
                     }),
                 });
 
-            return Results.Ok(new { tournamentId = id, hasOrganizerPro = req.Enabled });
+            return Results.Ok(new { tournamentId = id, hasOrganizerPro = req.Enabled ?? false, bracketTier = req.BracketTier });
         }).RequireAuthorization("Admin");
     }
 }
 
-public sealed record SetOrganizerProRequest(bool Enabled);
+public sealed record SetOrganizerProRequest(bool? Enabled = null, string? BracketTier = null);

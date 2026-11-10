@@ -378,9 +378,11 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         relinked.GetProperty("teamCaptainPlayerCardId").ValueKind.Should().Be(JsonValueKind.Null);
         if (!explicitCaptain)
         {
-            await conn.ExecuteAsync("UPDATE public.riot_accounts SET puuid = @provider WHERE user_id = @captain; UPDATE public.team_members SET role = 'captain' WHERE team_id = @team AND user_id = @owner", new { captain, provider = captain.ToString(), team, owner });
-            var ambiguous = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
-            ambiguous.GetProperty("teamCaptainPlayerCardId").ValueKind.Should().Be(JsonValueKind.Null);
+            // The unique index idx_team_members_one_captain_per_team now prevents two
+            // active captains on the same team — verify the constraint rejects it.
+            await conn.ExecuteAsync("UPDATE public.riot_accounts SET puuid = @provider WHERE user_id = @captain", new { captain, provider = captain.ToString() });
+            var act = () => conn.ExecuteAsync("UPDATE public.team_members SET role = 'captain' WHERE team_id = @team AND user_id = @owner", new { team, owner });
+            await act.Should().ThrowAsync<PostgresException>().Where(ex => ex.SqlState == PostgresErrorCodes.UniqueViolation);
         }
     }
 

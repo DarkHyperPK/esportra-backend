@@ -356,11 +356,11 @@ public static class TeamEndpoints
                     team = await conn.QuerySingleAsync<dynamic>(
                         """
                         INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                          owner_id, is_active, country_code, team_kind, slug)
+                                          owner_id, captain_id, is_active, country_code, team_kind, slug)
                         VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                                @ownerId, @ownerId, TRUE, @countryCode, 'team', @slug)
                         RETURNING id, name, tag, game, game_format, logo_url, description,
-                                 owner_id, is_active, country_code, created_at, slug
+                                 owner_id, captain_id, is_active, country_code, created_at, slug
                         """,
                         new
                         {
@@ -382,11 +382,11 @@ public static class TeamEndpoints
                     team = await conn.QuerySingleAsync<dynamic>(
                         """
                         INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                          owner_id, is_active, country_code, team_kind, slug)
+                                          owner_id, captain_id, is_active, country_code, team_kind, slug)
                         VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                                @ownerId, @ownerId, TRUE, @countryCode, 'team', @slug)
                         RETURNING id, name, tag, game, game_format, logo_url, description,
-                                 owner_id, is_active, country_code, created_at, slug
+                                 owner_id, captain_id, is_active, country_code, created_at, slug
                         """,
                         new
                         {
@@ -415,7 +415,7 @@ public static class TeamEndpoints
                 {
                     var memberRows = req.Members
                         .Where(m => m.UserId != userCtx.UserId)
-                        .Select(m => new { teamId, userId = Guid.Parse(m.UserId), role = m.Role })
+                        .Select(m => new { teamId, userId = Guid.Parse(m.UserId), role = m.Role == "captain" ? "member" : m.Role })
                         .ToList();
 
                     if (memberRows.Count > 0)
@@ -568,14 +568,22 @@ public static class TeamEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Owner cannot leave — must transfer captaincy first
+            // Owner cannot leave — must transfer ownership first
             var isOwner = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT owner_id = @userId FROM teams WHERE id = @id", new { id, userId = userCtx.UserIdGuid });
             if (isOwner)
+                return Results.BadRequest(new { error = "Transfer ownership before leaving." });
+
+            // Captain cannot leave — must transfer captaincy first
+            var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @userId AND role = 'captain' AND is_active = true)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (isCaptain)
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
-            if (await IsRosterLockedAsync(conn, id))
-                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
+            var rosterLockReason = await GetRosterLockReasonAsync(conn, id);
+            if (rosterLockReason is not null)
+                return Results.Conflict(new { error = $"Roster is locked. {rosterLockReason} Resolve this before changing the roster." });
 
             using var tx = conn.BeginTransaction();
             List<Guid> memberIds;
@@ -658,15 +666,22 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
-            if (await IsRosterLockedAsync(conn, id))
-                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
+            var rosterLockReason = await GetRosterLockReasonAsync(conn, id);
+            if (rosterLockReason is not null)
+                return Results.Conflict(new { error = $"Roster is locked. {rosterLockReason} Resolve this before changing the roster." });
 
             var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT owner_id FROM teams WHERE id = @id", new { id });
             if (ownerId is null) return Results.NotFound(new { error = "Team not found." });
             if (userId == ownerId)
+                return Results.BadRequest(new { error = "The team owner cannot be removed. Transfer ownership first." });
+
+            var targetRole = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT role FROM team_members WHERE team_id = @id AND user_id = @userId AND is_active = true",
+                new { id, userId });
+            if (targetRole == "captain")
                 return Results.BadRequest(new { error = "The team captain cannot be removed. Transfer captaincy first." });
 
             using var tx = conn.BeginTransaction();
@@ -781,28 +796,24 @@ public static class TeamEndpoints
                 var newCaptainName = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT username FROM profiles WHERE id = @userId", new { userId = newCaptainIdGuid });
 
-                // Step 1: demote current captain
-                await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'member' WHERE team_id = @id AND user_id = @userId AND role = 'captain'",
-                    new { id, userId = userCtx.UserIdGuid }, tx);
-
-                // Step 2: promote new captain (must already be a member)
-                var affected = await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'captain' WHERE team_id = @id AND user_id = @newCaptainId",
+                // Verify the new captain is an active team member
+                var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @newCaptainId AND is_active = true)",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
-                if (affected == 0)
+                if (!isMember)
                 {
                     tx.Rollback();
                     return Results.BadRequest(new { error = "New captain is not a team member." });
                 }
 
-                // Step 3: record the new captain on the team row (owner_id is unchanged; use /transfer-ownership for that)
+                // Update captain_id — the trg_sync_captain_role trigger automatically
+                // demotes the old captain and promotes the new one in team_members.
                 await conn.ExecuteAsync(
                     "UPDATE teams SET captain_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
-                // Step 4: update active tournament registrations only (non-critical)
+                // Update active tournament registrations (snapshot, not covered by trigger)
                 await conn.ExecuteAsync(
                     "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('eliminated', 'disqualified', 'cancelled', 'withdrawal_pending')",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
@@ -1230,12 +1241,16 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            // Verify the caller invited this person (is captain of that team)
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT team_id FROM team_invitations WHERE id = @id AND invited_by = @userId",
-                new { id = inviteId, userId = userCtx.UserIdGuid });
+                "SELECT team_id FROM team_invitations WHERE id = @id",
+                new { id = inviteId });
+            if (invite is null) return Results.NotFound(new { error = "Invite not found." });
 
-            if (invite is null) return Results.Forbid();
+            Guid teamId = (Guid)invite.team_id;
+            var canRevoke = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM teams WHERE id = @teamId AND (owner_id = @userId OR captain_id = @userId))",
+                new { teamId, userId = userCtx.UserIdGuid });
+            if (!canRevoke) return Results.Forbid();
 
             await conn.ExecuteAsync("DELETE FROM team_invitations WHERE id = @id", new { id = inviteId });
             return Results.Ok(new { success = true });
@@ -2163,28 +2178,43 @@ public static class TeamEndpoints
             throw new UnauthorizedAccessException("Only a team captain can perform this action.");
     }
 
-    /// <summary>
-    /// Returns true when the team has open scrim listings or an active tournament registration.
-    /// Roster changes are blocked while either condition holds to prevent manipulation.
-    /// </summary>
-    private static async Task<bool> IsRosterLockedAsync(IDbConnection conn, Guid teamId)
+    /// <summary>Throws 403 if the user is neither the team captain nor the team owner.</summary>
+    private static async Task AssertCaptainOrOwner(IDbConnection conn, Guid teamId, Guid userId)
     {
-        return await conn.ExecuteScalarAsync<bool>(
+        var allowed = await conn.QuerySingleOrDefaultAsync<bool>(
             """
-            SELECT
-                EXISTS(
-                    SELECT 1 FROM public.scrim_sessions
-                    WHERE (team1_id = @teamId OR team2_id = @teamId)
-                      AND status IN ('scheduled', 'in_progress')
-                )
-                OR EXISTS(
-                    SELECT 1 FROM public.tournament_participants tp
-                    JOIN public.tournaments t ON t.id = tp.tournament_id
-                    WHERE tp.team_id = @teamId
-                      AND tp.participant_type = 'team'
-                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending')
-                      AND t.status NOT IN ('completed', 'cancelled')
-                )
+            SELECT EXISTS(
+                SELECT 1 FROM teams WHERE id = @teamId AND (owner_id = @userId OR captain_id = @userId)
+            )
+            """,
+            new { teamId, userId });
+        if (!allowed)
+            throw new UnauthorizedAccessException("Only the team captain or owner can perform this action.");
+    }
+
+    private static async Task<string?> GetRosterLockReasonAsync(IDbConnection conn, Guid teamId)
+    {
+        var scrim = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT 'You have an active scrim match (' || COALESCE(ss.id::text, 'unknown') || ') in status: ' || ss.status
+            FROM public.scrim_sessions ss
+            WHERE (ss.team1_id = @teamId OR ss.team2_id = @teamId)
+              AND ss.status IN ('scheduled', 'in_progress')
+            LIMIT 1
+            """,
+            new { teamId });
+        if (scrim is not null) return scrim;
+
+        return await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT 'You are registered in tournament "' || t.name || '" (status: ' || t.status || ').'
+            FROM public.tournament_participants tp
+            JOIN public.tournaments t ON t.id = tp.tournament_id
+            WHERE tp.team_id = @teamId
+              AND tp.participant_type = 'team'
+              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending', 'eliminated')
+              AND t.status IN ('check_in', 'ongoing')
+            LIMIT 1
             """,
             new { teamId });
     }

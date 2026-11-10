@@ -4,9 +4,9 @@ namespace Esportra.Core.Match;
 
 // ── Veto State Machine Types ───────────────────────────────────────────────
 
-public enum VetoState { Init, Ban, Pick, PickSide, Complete }
+public enum VetoState { Init, TossChoicePending, Ban, Pick, PickSide, Complete }
 
-public enum VetoEvent { SetBo, BanMap, PickMap, PickSide, Reset }
+public enum VetoEvent { SetBo, BanMap, PickMap, PickSide, Reset, TossChoice }
 
 public sealed record VetoTransitionResult(bool Ok, string? Reason = null);
 
@@ -41,6 +41,11 @@ public sealed record MatchMapVeto
     public string? Game { get; init; } = "valorant";
     public string? Team1LinkToken { get; init; }
     public string? Team2LinkToken { get; init; }
+
+    // Toss state — null until toss is completed
+    public Guid? TossWinnerTeamId { get; init; }
+    public DateTime? TossCompletedAt { get; init; }
+    public Guid? TossFirstActorTeamId { get; init; }
 }
 
 public sealed record PickedMap(string MapId, string? Side = null);

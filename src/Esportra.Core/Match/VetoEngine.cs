@@ -12,7 +12,8 @@ public static class VetoEngine
     {
         if (veto is null) return VetoState.Init;
         if (veto.Status == "completed") return VetoState.Complete;
-        if (veto.Status == "pending" && veto.CurrentTeamId is null) return VetoState.Init;
+        if (veto.Status == "toss_choice_pending") return VetoState.TossChoicePending;
+        if (veto.Status is "pending" or "pending_toss" && veto.CurrentTeamId is null) return VetoState.Init;
 
         return veto.CurrentAction switch
         {
@@ -46,6 +47,10 @@ public static class VetoEngine
             VetoEvent.SetBo =>
                 state != VetoState.Init ? new(false, "INVALID_STATE") :
                 !context.IsOrganizer ? new(false, "FORBIDDEN") :
+                new(true),
+
+            VetoEvent.TossChoice =>
+                state != VetoState.TossChoicePending ? new(false, "INVALID_STATE") :
                 new(true),
 
             VetoEvent.BanMap or VetoEvent.PickMap or VetoEvent.PickSide =>

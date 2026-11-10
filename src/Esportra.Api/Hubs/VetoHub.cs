@@ -99,4 +99,7 @@ public static class VetoHubEvents
 
     /// <summary>Toss result revealed. Payload: { sessionId, winnerTeamId, winnerTeamName }.</summary>
     public const string PublicVetoTossResult = "PublicVetoTossResult";
+
+    /// <summary>Match-room toss result. Payload: { matchId, winnerTeamId, winnerTeamName }.</summary>
+    public const string VetoTossResult = "VetoTossResult";
 }

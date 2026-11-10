@@ -24,7 +24,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                    selected_map_id::text as selected_map_id, selected_map_pool,
                    started_at, completed_at, game,
                    team1_link_token, team2_link_token,
-                   turn_started_at, turn_duration_seconds
+                   turn_started_at, turn_duration_seconds,
+                   toss_winner_team_id, toss_completed_at, toss_first_actor_team_id
             FROM public.match_map_vetos
             WHERE match_id = @matchId",
             new { matchId });
@@ -47,7 +48,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                    selected_map_id::text as selected_map_id, selected_map_pool,
                    started_at, completed_at, game,
                    team1_link_token, team2_link_token,
-                   turn_started_at, turn_duration_seconds
+                   turn_started_at, turn_duration_seconds,
+                   toss_winner_team_id, toss_completed_at, toss_first_actor_team_id
             FROM public.match_map_vetos
             WHERE id = @vetoId",
             new { vetoId });
@@ -204,19 +206,15 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                 $"INVALID_POOL_SIZE: expected {gameConfig.MapPoolSize} maps for {game}, got {mapPoolIds.Length}");
         }
 
-        var poolSize = mapPoolIds.Length;
-        var initSettings = await settingsRepo.GetAsync(matchId, ct);
-        var initResolver = VetoSequenceResolverFactory.Create(initSettings);
-        var stub = new MatchMapVeto { BestOf = bestOf, Game = game, SelectedMapPool = mapPoolIds };
-        var firstStep = initResolver.GetStep(stub, 1, poolSize)
-            ?? throw new InvalidOperationException("No veto sequence for bestOf=" + bestOf);
-        Guid? firstTeamId = firstStep.Action == "ignore"
-            ? null
-            : (firstStep.Team == "T1" ? team1Id : team2Id);
-
         // Generate cryptographic tokens for team links (S5)
         var team1Token = GenerateCryptoToken();
         var team2Token = GenerateCryptoToken();
+
+        // Auto-toss: resolve winner at init time (same pattern as scrims — no host step needed)
+        Guid? autoTossWinnerId = (team1Id.HasValue && team2Id.HasValue)
+            ? ((RandomNumberGenerator.GetBytes(1)[0] & 1) == 0 ? team1Id.Value : team2Id.Value)
+            : null;
+        var initStatus = autoTossWinnerId.HasValue ? "toss_choice_pending" : "pending";
 
         var id = Guid.NewGuid();
         await conn.ExecuteAsync(@"
@@ -226,21 +224,23 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                  team1_banned_maps, team2_banned_maps,
                  team1_picked_maps, team2_picked_maps,
                  selected_map_pool, started_at, game, team1_link_token, team2_link_token,
-                 turn_started_at)
+                 turn_started_at,
+                 toss_winner_team_id, toss_completed_at, toss_first_actor_team_id)
             VALUES
-                (@id, @match_id, @tournament_id, @team1_id, @team2_id, @best_of, 'in_progress',
-                 @current_team_id, @current_action, @action_number,
+                (@id, @match_id, @tournament_id, @team1_id, @team2_id, @best_of, @initStatus,
+                 NULL, NULL, 0,
                  '{}', '{}',
                  '[]'::json, '[]'::json,
-                 @selected_map_pool, now(), @game, @team1_token, @team2_token, now())
+                 @selected_map_pool, now(), @game, @team1_token, @team2_token, NULL,
+                 @tossWinnerId, CASE WHEN @tossWinnerId IS NOT NULL THEN now() ELSE NULL END, NULL)
             ON CONFLICT (match_id) DO UPDATE SET
                 team1_id = @team1_id,
                 team2_id = @team2_id,
                 best_of = @best_of,
-                status = 'in_progress',
-                current_team_id = @current_team_id,
-                current_action = @current_action,
-                current_action_number = @action_number,
+                status = @initStatus,
+                current_team_id = NULL,
+                current_action = NULL,
+                current_action_number = 0,
                 team1_banned_maps = '{}',
                 team2_banned_maps = '{}',
                 team1_picked_maps = '[]'::json,
@@ -249,8 +249,11 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                 selected_map_pool = @selected_map_pool,
                 completed_at = null,
                 started_at = now(),
-                turn_started_at = now(),
+                turn_started_at = NULL,
                 game = @game,
+                toss_winner_team_id = @tossWinnerId,
+                toss_completed_at = CASE WHEN @tossWinnerId IS NOT NULL THEN now() ELSE NULL END,
+                toss_first_actor_team_id = NULL,
                 team1_link_token = CASE
                     WHEN match_map_vetos.team1_id IS DISTINCT FROM @team1_id THEN @team1_token
                     ELSE COALESCE(match_map_vetos.team1_link_token, @team1_token)
@@ -267,13 +270,12 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                 team1_id = team1Id,
                 team2_id = team2Id,
                 best_of = bestOf,
-                current_team_id = firstTeamId,
-                current_action = firstStep.Action,
-                action_number = firstStep.ActionNumber,
                 selected_map_pool = mapPoolIds,
                 game,
                 team1_token = team1Token,
                 team2_token = team2Token,
+                initStatus,
+                tossWinnerId = autoTossWinnerId,
             });
 
         await conn.ExecuteAsync(
@@ -538,6 +540,69 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
             ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
+
+    /// <summary>
+    /// Toss winner chooses to go first or let the opponent go first.
+    /// Transitions toss_choice_pending → in_progress.
+    /// </summary>
+    public async Task<MatchMapVeto> TossChoiceAsync(
+        Guid matchId, Guid callerTeamId, bool goFirst, CancellationToken ct = default)
+    {
+        var veto = await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found.");
+
+        if (veto.Status != "toss_choice_pending")
+            throw new InvalidOperationException("INVALID_STATE: toss-choice requires toss_choice_pending status.");
+
+        if (veto.TossWinnerTeamId is null)
+            throw new InvalidOperationException("INVALID_STATE: no toss winner recorded.");
+
+        if (callerTeamId != veto.TossWinnerTeamId.Value)
+            throw new UnauthorizedAccessException("Only the toss winner can make this choice.");
+
+        var opponentId = veto.Team1Id == callerTeamId ? veto.Team2Id!.Value : veto.Team1Id!.Value;
+        var firstActorId = goFirst ? callerTeamId : opponentId;
+
+        // Re-derive the first sequence step to set current_team_id correctly.
+        var settings = await settingsRepo.GetAsync(matchId, ct);
+        var resolver = VetoSequenceResolverFactory.Create(settings);
+        var stub = new MatchMapVeto
+        {
+            BestOf = veto.BestOf,
+            Game = veto.Game ?? "valorant",
+            SelectedMapPool = veto.SelectedMapPool,
+        };
+        var firstStep = resolver.GetStep(stub, 1, veto.SelectedMapPool.Length)
+            ?? throw new InvalidOperationException("No veto sequence for bestOf=" + veto.BestOf);
+
+        // T1 = firstActorId, T2 = the other team
+        var t2 = veto.Team1Id == firstActorId ? veto.Team2Id!.Value : veto.Team1Id!.Value;
+        Guid? currentTeamId = firstStep.Action == "ignore"
+            ? null
+            : (firstStep.Team == "T1" ? firstActorId : t2);
+
+        using var conn = db.CreateConnection();
+        await conn.ExecuteAsync(@"
+            UPDATE public.match_map_vetos
+               SET toss_first_actor_team_id = @firstActorId,
+                   current_team_id          = @currentTeamId,
+                   current_action           = @currentAction,
+                   current_action_number    = 1,
+                   status                   = 'in_progress',
+                   turn_started_at          = now()
+             WHERE match_id = @matchId",
+            new
+            {
+                matchId,
+                firstActorId,
+                currentTeamId,
+                currentAction = firstStep.Action,
+            });
+
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after toss choice.");
+    }
+
     // ── Reset ────────────────────────────────────────────────────────────────
 
     public async Task ResetAsync(Guid matchId, CancellationToken ct = default)
@@ -566,7 +631,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                    selected_map_id = null,
                    started_at = null,
                    completed_at = null,
-                   turn_started_at = null
+                   turn_started_at = null,
+                   toss_winner_team_id = null,
+                   toss_completed_at = null,
+                   toss_first_actor_team_id = null
              WHERE match_id = @matchId",
             new { matchId });
     }
@@ -603,6 +671,19 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
             throw new InvalidOperationException("MAP_ALREADY_USED: map is already banned");
         if (ev != VetoEvent.PickSide && isPicked)
             throw new InvalidOperationException("MAP_ALREADY_USED: map is already picked");
+    }
+
+    /// <summary>
+    /// Returns the team ID the caller belongs to in this veto, or null if they are not a participant.
+    /// Organizers acting on behalf of a team return null (use IsOrganizerAsync separately).
+    /// </summary>
+    public async Task<Guid?> ResolveCallerTeamIdAsync(
+        Guid userId, Guid? team1Id, Guid? team2Id, Guid tournamentId, CancellationToken ct = default)
+    {
+        if (team1Id.HasValue && await IsTeamCaptainAsync(userId, team1Id.Value, ct)) return team1Id;
+        if (team2Id.HasValue && await IsTeamCaptainAsync(userId, team2Id.Value, ct)) return team2Id;
+        if (await IsOrganizerAsync(userId, tournamentId, ct)) return null;
+        return null;
     }
 
     private async Task AssertIsCaptainOfCurrentTeam(Guid userId, MatchMapVeto veto, CancellationToken ct)
@@ -788,9 +869,14 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
 
     private async Task WriteNextStepAsync(Guid matchId, MatchMapVeto veto, VetoStep next)
     {
+        // When a toss determined the first actor, T1 = toss winner's choice, T2 = the other team.
+        Guid? t1 = veto.TossFirstActorTeamId ?? veto.Team1Id;
+        Guid? t2 = veto.TossFirstActorTeamId.HasValue
+            ? (veto.Team1Id == veto.TossFirstActorTeamId ? veto.Team2Id : veto.Team1Id)
+            : veto.Team2Id;
         Guid? nextTeamId = next.Action == "ignore"
             ? null
-            : (next.Team == "T1" ? veto.Team1Id : veto.Team2Id);
+            : (next.Team == "T1" ? t1 : t2);
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(@"
             UPDATE public.match_map_vetos
@@ -966,6 +1052,9 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
             Game = row.game ?? "valorant",
             Team1LinkToken = (string?)row.team1_link_token,
             Team2LinkToken = (string?)row.team2_link_token,
+            TossWinnerTeamId = (Guid?)row.toss_winner_team_id,
+            TossCompletedAt = (DateTime?)row.toss_completed_at,
+            TossFirstActorTeamId = (Guid?)row.toss_first_actor_team_id,
         };
     }
 }
