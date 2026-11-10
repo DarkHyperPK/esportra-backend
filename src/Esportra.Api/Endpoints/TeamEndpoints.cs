@@ -356,11 +356,11 @@ public static class TeamEndpoints
                     team = await conn.QuerySingleAsync<dynamic>(
                         """
                         INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                          owner_id, is_active, country_code, team_kind, slug)
+                                          owner_id, captain_id, is_active, country_code, team_kind, slug)
                         VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                                @ownerId, @ownerId, TRUE, @countryCode, 'team', @slug)
                         RETURNING id, name, tag, game, game_format, logo_url, description,
-                                 owner_id, is_active, country_code, created_at, slug
+                                 owner_id, captain_id, is_active, country_code, created_at, slug
                         """,
                         new
                         {
@@ -382,11 +382,11 @@ public static class TeamEndpoints
                     team = await conn.QuerySingleAsync<dynamic>(
                         """
                         INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                          owner_id, is_active, country_code, team_kind, slug)
+                                          owner_id, captain_id, is_active, country_code, team_kind, slug)
                         VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                                @ownerId, @ownerId, TRUE, @countryCode, 'team', @slug)
                         RETURNING id, name, tag, game, game_format, logo_url, description,
-                                 owner_id, is_active, country_code, created_at, slug
+                                 owner_id, captain_id, is_active, country_code, created_at, slug
                         """,
                         new
                         {
@@ -568,10 +568,17 @@ public static class TeamEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Owner cannot leave — must transfer captaincy first
+            // Owner cannot leave — must transfer ownership first
             var isOwner = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT owner_id = @userId FROM teams WHERE id = @id", new { id, userId = userCtx.UserIdGuid });
             if (isOwner)
+                return Results.BadRequest(new { error = "Transfer ownership before leaving." });
+
+            // Captain cannot leave — must transfer captaincy first
+            var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @userId AND role = 'captain' AND is_active = true)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (isCaptain)
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
             if (await IsRosterLockedAsync(conn, id))
@@ -667,6 +674,12 @@ public static class TeamEndpoints
                 "SELECT owner_id FROM teams WHERE id = @id", new { id });
             if (ownerId is null) return Results.NotFound(new { error = "Team not found." });
             if (userId == ownerId)
+                return Results.BadRequest(new { error = "The team owner cannot be removed. Transfer ownership first." });
+
+            var targetRole = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT role FROM team_members WHERE team_id = @id AND user_id = @userId AND is_active = true",
+                new { id, userId });
+            if (targetRole == "captain")
                 return Results.BadRequest(new { error = "The team captain cannot be removed. Transfer captaincy first." });
 
             using var tx = conn.BeginTransaction();
