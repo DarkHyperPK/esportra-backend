@@ -415,7 +415,7 @@ public static class TeamEndpoints
                 {
                     var memberRows = req.Members
                         .Where(m => m.UserId != userCtx.UserId)
-                        .Select(m => new { teamId, userId = Guid.Parse(m.UserId), role = m.Role })
+                        .Select(m => new { teamId, userId = Guid.Parse(m.UserId), role = m.Role == "captain" ? "member" : m.Role })
                         .ToList();
 
                     if (memberRows.Count > 0)
