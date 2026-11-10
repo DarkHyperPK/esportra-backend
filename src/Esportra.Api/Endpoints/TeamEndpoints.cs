@@ -794,28 +794,24 @@ public static class TeamEndpoints
                 var newCaptainName = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT username FROM profiles WHERE id = @userId", new { userId = newCaptainIdGuid });
 
-                // Step 1: demote current captain
-                await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'member' WHERE team_id = @id AND user_id = @userId AND role = 'captain'",
-                    new { id, userId = userCtx.UserIdGuid }, tx);
-
-                // Step 2: promote new captain (must already be a member)
-                var affected = await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'captain' WHERE team_id = @id AND user_id = @newCaptainId",
+                // Verify the new captain is an active team member
+                var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @newCaptainId AND is_active = true)",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
-                if (affected == 0)
+                if (!isMember)
                 {
                     tx.Rollback();
                     return Results.BadRequest(new { error = "New captain is not a team member." });
                 }
 
-                // Step 3: record the new captain on the team row (owner_id is unchanged; use /transfer-ownership for that)
+                // Update captain_id — the trg_sync_captain_role trigger automatically
+                // demotes the old captain and promotes the new one in team_members.
                 await conn.ExecuteAsync(
                     "UPDATE teams SET captain_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
-                // Step 4: update active tournament registrations only (non-critical)
+                // Update active tournament registrations (snapshot, not covered by trigger)
                 await conn.ExecuteAsync(
                     "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('eliminated', 'disqualified', 'cancelled', 'withdrawal_pending')",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);

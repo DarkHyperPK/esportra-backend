@@ -3526,22 +3526,19 @@ public static class AdminEndpoints
                 var newCaptainName = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT username FROM profiles WHERE id = @userId", new { userId = newCaptainId });
 
-                // Demote current captain
-                await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'member' WHERE team_id = @id AND role = 'captain'",
-                    new { id }, tx);
-
-                // Promote new captain
-                var affected = await conn.ExecuteAsync(
-                    "UPDATE team_members SET role = 'captain' WHERE team_id = @id AND user_id = @newCaptainId",
+                // Verify the new captain is an active team member
+                var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @newCaptainId AND is_active = true)",
                     new { id, newCaptainId }, tx);
-                if (affected == 0) { tx.Rollback(); return Results.BadRequest(new { error = "User is not a team member." }); }
+                if (!isMember) { tx.Rollback(); return Results.BadRequest(new { error = "User is not a team member." }); }
 
-                // Update captain_id (owner_id is unchanged — ownership requires explicit transfer-ownership)
+                // Update captain_id — the trg_sync_captain_role trigger automatically
+                // demotes the old captain and promotes the new one in team_members.
                 await conn.ExecuteAsync(
                     "UPDATE teams SET captain_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
                     new { id, newCaptainId }, tx);
 
+                // Update active tournament registrations (snapshot, not covered by trigger)
                 await conn.ExecuteAsync(
                     "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('eliminated', 'disqualified', 'cancelled', 'withdrawal_pending')",
                     new { id, newCaptainId }, tx);
