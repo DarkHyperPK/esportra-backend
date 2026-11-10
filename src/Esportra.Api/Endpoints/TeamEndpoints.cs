@@ -1239,12 +1239,16 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            // Verify the caller invited this person (is captain of that team)
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT team_id FROM team_invitations WHERE id = @id AND invited_by = @userId",
-                new { id = inviteId, userId = userCtx.UserIdGuid });
+                "SELECT team_id FROM team_invitations WHERE id = @id",
+                new { id = inviteId });
+            if (invite is null) return Results.NotFound(new { error = "Invite not found." });
 
-            if (invite is null) return Results.Forbid();
+            Guid teamId = (Guid)invite.team_id;
+            var canRevoke = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM teams WHERE id = @teamId AND (owner_id = @userId OR captain_id = @userId))",
+                new { teamId, userId = userCtx.UserIdGuid });
+            if (!canRevoke) return Results.Forbid();
 
             await conn.ExecuteAsync("DELETE FROM team_invitations WHERE id = @id", new { id = inviteId });
             return Results.Ok(new { success = true });
@@ -2193,6 +2197,7 @@ public static class TeamEndpoints
                       AND tp.participant_type = 'team'
                       AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified', 'withdrawal_pending')
                       AND t.status NOT IN ('completed', 'cancelled')
+                      AND (t.end_date IS NULL OR t.end_date >= NOW() - INTERVAL '24 hours')
                 )
             """,
             new { teamId });
