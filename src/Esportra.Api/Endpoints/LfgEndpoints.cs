@@ -76,6 +76,9 @@ public static class LfgEndpoints
         app.MapPost("/api/competitive/lfg/{id:guid}/sync-stats", LfgStatsSyncEndpoints.SyncListingAsync)
             .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("valorantSync"))
             .RequireAuthorization("Authenticated");
+        app.MapPost("/api/competitive/lfg/{id:guid}/sync-roster-stats", LfgStatsSyncEndpoints.SyncRosterAsync)
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("valorantSync"))
+            .RequireAuthorization("Authenticated");
 
         app.MapGet("/api/competitive/lfg", DiscoverAsync)
             .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("public"))

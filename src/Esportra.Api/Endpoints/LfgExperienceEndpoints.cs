@@ -39,27 +39,16 @@ public static class LfgExperienceEndpoints
             """
             SELECT rm.user_id, p.username, p.avatar_url, p.avatar_seed, p.avatar_style,
                    rm.roster_role::text AS roster_role, COALESCE(rm.is_starter, false) AS is_starter,
-                   CASE WHEN visible.can_view THEN stats.competitive_tier END AS competitive_tier,
-                   CASE WHEN visible.can_view THEN stats.competitive_tier_name END AS competitive_tier_name,
-                   CASE WHEN visible.can_view THEN stats.kd_ratio END AS kd_ratio,
-                   CASE WHEN visible.can_view THEN stats.win_rate END AS win_rate,
-                   CASE WHEN visible.can_view THEN stats.matches_analyzed END AS matches_analyzed
+                   stats.competitive_tier, stats.competitive_tier_name,
+                   stats.kd_ratio, stats.win_rate, stats.matches_analyzed
             FROM public.team_roster_members rm
             JOIN public.team_members tm ON tm.team_id = @teamId AND tm.user_id = rm.user_id AND tm.is_active = true
             JOIN public.profiles p ON p.id = rm.user_id
             LEFT JOIN public.player_game_stats stats ON stats.user_id = rm.user_id AND stats.game_slug = @game
               AND (@game <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = rm.user_id AND linked.puuid = stats.provider_player_id))
-            CROSS JOIN LATERAL (SELECT rm.user_id = @userId OR EXISTS (
-                SELECT 1 FROM public.player_game_profiles pgp
-                WHERE pgp.user_id = rm.user_id AND pgp.game_slug = @game AND pgp.profile_visible = true
-            ) OR EXISTS (
-                SELECT 1 FROM public.lfg_listings own
-                WHERE own.user_id = rm.user_id AND own.game_slug = @game AND own.intent::text = 'looking_for_team' AND own.status = 'published'
-                  AND (own.expires_at IS NULL OR own.expires_at > now())
-            ) AS can_view) visible
             WHERE rm.roster_id = @rosterId AND rm.is_active = true
             ORDER BY rm.display_order, rm.created_at, rm.user_id
-            """, new { teamId = listing.TeamId, game = listing.GameSlug, rosterId = rosterIds[0], userId = user?.UserIdGuid });
+            """, new { teamId = listing.TeamId, game = listing.GameSlug, rosterId = rosterIds[0] });
         return Results.Ok(new { status = "available", members });
     }
 
