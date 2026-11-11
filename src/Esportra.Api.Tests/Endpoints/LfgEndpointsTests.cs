@@ -306,8 +306,8 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         result.GetProperty("status").GetString().Should().Be("available");
         var members = result.GetProperty("members").EnumerateArray().ToArray();
         members.Should().HaveCount(2);
-        var hidden = members.Single(item => item.GetProperty("userId").GetGuid() == owner);
-        hidden.GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
+        var ownerRow = members.Single(item => item.GetProperty("userId").GetGuid() == owner);
+        ownerRow.GetProperty("kdRatio").GetDecimal().Should().Be(1.11m);
         var visible = members.Single(item => item.GetProperty("userId").GetGuid() == member);
         visible.GetProperty("kdRatio").GetDecimal().Should().Be(1.50m);
         visible.TryGetProperty("email", out _).Should().BeFalse();
@@ -317,7 +317,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         guestResponse.EnsureSuccessStatusCode();
         var guestRoster = await guestResponse.Content.ReadFromJsonAsync<JsonElement>();
         guestRoster.GetProperty("members").EnumerateArray().Single(item => item.GetProperty("userId").GetGuid() == owner)
-            .GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
+            .GetProperty("kdRatio").GetDecimal().Should().Be(1.11m);
         var playerListing = await SeedListingAsync(owner, "valorant");
         await conn.ExecuteAsync("UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = @playerListing", new { playerListing });
         var optedIn = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
@@ -326,7 +326,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         await conn.ExecuteAsync("UPDATE public.lfg_listings SET status = 'paused' WHERE id = @playerListing", new { playerListing });
         var afterPause = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
         afterPause.GetProperty("members").EnumerateArray().Single(item => item.GetProperty("userId").GetGuid() == owner)
-            .GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
+            .GetProperty("kdRatio").GetDecimal().Should().Be(1.11m);
         await conn.ExecuteAsync("INSERT INTO public.team_rosters (team_id, name, game, team_size) VALUES (@teamId, 'Duplicate', 'VALORANT', 5)", new { teamId });
         var duplicate = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
         duplicate.GetProperty("status").GetString().Should().Be("ambiguous");
