@@ -485,7 +485,7 @@ public static class TeamEndpoints
         // ── DELETE /api/teams/{id} — soft-archive (default) or hard-delete (?force=true admin only) ───
         app.MapDelete("/api/teams/{id}", async (
             Guid id,
-            bool force,
+            bool? force,
             string? reason,
             HttpContext ctx,
             IDbConnectionFactory db,
@@ -496,7 +496,7 @@ public static class TeamEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (force)
+            if (force == true)
             {
                 // Hard-delete: admin only; preserves the original cascade behavior
                 if (!StaffAuthHelper.IsPlatformAdmin(userCtx))
