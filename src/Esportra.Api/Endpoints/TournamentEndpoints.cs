@@ -175,7 +175,7 @@ public static class TournamentEndpoints
                t.organizer_id, t.venue_id, t.description,
                t.created_at, t.updated_at, t.region, t.currency,
                (SELECT COUNT(*) FROM tournament_participants tp
-                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
+                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified', 'pending', 'withdrawal_pending')) AS current_participants,
                o.name   AS organizer_name,
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
@@ -293,7 +293,7 @@ public static class TournamentEndpoints
                            t.organizer_id, t.venue_id, t.description,
                            t.created_at, t.updated_at, t.region, t.currency,
                            (SELECT COUNT(*) FROM tournament_participants tp
-                            WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
+                            WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified', 'pending', 'withdrawal_pending')) AS current_participants,
                            o.name   AS organizer_name,
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
@@ -410,7 +410,7 @@ public static class TournamentEndpoints
                                t.organizer_id, t.venue_id, t.description,
                                t.created_at, t.updated_at, t.region, t.currency,
                                (SELECT COUNT(*) FROM tournament_participants tp
-                                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
+                                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified', 'pending', 'withdrawal_pending')) AS current_participants,
                                o.name AS organizer_name,
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
@@ -491,7 +491,7 @@ public static class TournamentEndpoints
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT t.*,
-                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
+                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified', 'pending', 'withdrawal_pending')) AS current_participants,
                        (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status = 'checked_in') AS checked_in_count,
                        o.name       AS organization_name, o.slug AS organization_slug,
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
@@ -2516,12 +2516,18 @@ public static class TournamentEndpoints
         {
             using var conn = db.CreateConnection();
 
-            // Build optional status filter — exclude rejected/cancelled by default
-            var statusFilter = !string.IsNullOrEmpty(status)
-                ? "AND tp.status::text = @status"
-                : "AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')";
-
             var access = await ResolveAccessAsync(ctx, staffAuth, id, ct);
+
+            // Non-organizers only see approved / checked_in / eliminated participants
+            var hiddenFromPublic = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "pending", "withdrawal_pending" };
+            string statusFilter;
+            if (!string.IsNullOrEmpty(status) && (access.IsOrganizer || !hiddenFromPublic.Contains(status)))
+                statusFilter = "AND tp.status::text = @status";
+            else if (access.IsOrganizer)
+                statusFilter = "AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')";
+            else
+                statusFilter = "AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified', 'pending', 'withdrawal_pending')";
 
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(
@@ -5520,7 +5526,9 @@ public static class TournamentEndpoints
             .Where(p =>
             {
                 string status = (string)p.status;
-                return status != "rejected" && status != "cancelled";
+                return status != "rejected" && status != "cancelled"
+                    && status != "pending" && status != "withdrawal_pending"
+                    && status != "disqualified";
             })
             .Select(p => (object)new
             {
