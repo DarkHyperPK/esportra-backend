@@ -448,7 +448,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -904,7 +904,7 @@ public static class TeamEndpoints
                 return Results.BadRequest(new { error = $"Invalid role. Allowed: {string.Join(", ", allowedRoles)}" });
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             // Prevent changing captain's role via this endpoint
             var targetRole = await conn.QuerySingleOrDefaultAsync<string>(
@@ -944,7 +944,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             // Captain must be order 0
             var captainId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -982,7 +982,7 @@ public static class TeamEndpoints
             var reqUserIdGuid = Guid.Parse(req.UserId);
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             // Check not already a member of this team
             var alreadyMember = await conn.QuerySingleOrDefaultAsync<bool>(
@@ -1338,7 +1338,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var invites = await conn.QueryAsync<dynamic>(
                 """
@@ -1422,7 +1422,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var roster = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -1484,7 +1484,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "UPDATE team_rosters SET name = @name WHERE id = @rosterId AND team_id = @teamId",
@@ -1503,7 +1503,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "DELETE FROM team_rosters WHERE id = @rosterId AND team_id = @teamId",
@@ -1550,7 +1550,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var userIdGuid = Guid.Parse(req.UserId);
 
@@ -1627,7 +1627,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT owner_id FROM teams WHERE id = @teamId",
@@ -1655,7 +1655,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var rosterRole = req.IsStarter ? "starter" : "substitute";
 
@@ -1697,7 +1697,7 @@ public static class TeamEndpoints
                 return Results.BadRequest(new { error = "Roster role must be starter, substitute, or coach." });
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var onRoster = await conn.QuerySingleOrDefaultAsync<bool>(
                 """
@@ -1748,7 +1748,7 @@ public static class TeamEndpoints
 
             var reqUserIdGuid = Guid.Parse(req.UserId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             // Check for duplicate pending invite
             var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1820,7 +1820,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM teams WHERE id = @id", new { id });
@@ -1907,7 +1907,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+            await AssertCaptainOrOwner(conn, id, userCtx.UserIdGuid);
 
             int sent = 0;
             foreach (var invitee in req.Invitees)
