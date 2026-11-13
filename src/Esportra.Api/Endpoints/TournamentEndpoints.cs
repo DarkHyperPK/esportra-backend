@@ -576,10 +576,14 @@ public static class TournamentEndpoints
 
             if (canManage)
             {
-                var teamIds = allParticipants
+                var teamParticipants = allParticipants
                     .Where(p => p.team_id is not null
                         && !string.Equals(p.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase))
-                    .Select(p => (Guid)p.team_id)
+                    .ToList();
+                var teamIds = teamParticipants.Select(p => (Guid)p.team_id).Distinct().ToArray();
+                var rosterIds = teamParticipants
+                    .Where(p => p.roster_id is not null)
+                    .Select(p => (Guid)p.roster_id)
                     .Distinct()
                     .ToArray();
 
@@ -591,13 +595,16 @@ public static class TournamentEndpoints
                                p.avatar_url, p.riot_tag,
                                di.identity_data->>'full_name' AS discord_handle,
                                p.steam_tag,
-                               tm.role::text AS roster_role
+                               COALESCE(trm.roster_role::text, tm.role::text) AS roster_role
                         FROM team_members tm
                         JOIN profiles p ON p.id = tm.user_id
                         LEFT JOIN auth.identities di ON di.user_id = tm.user_id AND di.provider = 'discord'
+                        LEFT JOIN team_roster_members trm
+                          ON trm.user_id = tm.user_id
+                         AND trm.roster_id = ANY(@rosterIds)
                         WHERE tm.team_id = ANY(@teamIds) AND tm.is_active = true
-                        ORDER BY tm.display_order, p.username
-                        """, new { teamIds });
+                        ORDER BY trm.display_order, tm.display_order, p.username
+                        """, new { teamIds, rosterIds });
 
                     var membersByTeam = memberRows
                         .GroupBy(m => (Guid)m.team_id)
@@ -2375,7 +2382,7 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       tm.role::text AS member_roster_role,
+                       COALESCE(trm.roster_role::text, tm.role::text) AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2385,6 +2392,8 @@ public static class TournamentEndpoints
                 LEFT JOIN team_members tm ON tm.team_id = tp.team_id
                   AND tm.is_active = true
                   AND COALESCE(tp.participant_type::text, '') != 'solo'
+                LEFT JOIN team_roster_members trm ON trm.user_id = tm.user_id
+                  AND trm.roster_id = tp.roster_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN auth.identities mdi ON mdi.user_id = tm.user_id AND mdi.provider = 'discord'
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
@@ -2555,7 +2564,7 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       tm.role::text AS member_roster_role,
+                       COALESCE(trm.roster_role::text, tm.role::text) AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2565,6 +2574,8 @@ public static class TournamentEndpoints
                 LEFT JOIN team_members tm ON tm.team_id = tp.team_id
                   AND tm.is_active = true
                   AND COALESCE(tp.participant_type::text, '') != 'solo'
+                LEFT JOIN team_roster_members trm ON trm.user_id = tm.user_id
+                  AND trm.roster_id = tp.roster_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN auth.identities mdi ON mdi.user_id = tm.user_id AND mdi.provider = 'discord'
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
