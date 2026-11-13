@@ -530,7 +530,7 @@ public static class TournamentEndpoints
                        p.avatar_url AS user_avatar_url,
                        p.full_name AS user_full_name,
                        p.riot_tag AS solo_riot_tag,
-                       COALESCE(p.social_links->>'discord_handle', di.identity_data->>'full_name') AS discord_handle,
+                       di.identity_data->>'full_name' AS discord_handle,
                        p.steam_tag AS solo_steam_tag
                 FROM tournament_participants tp
                 LEFT JOIN teams    ON teams.id = tp.team_id
@@ -589,7 +589,7 @@ public static class TournamentEndpoints
                         """
                         SELECT tm.team_id, p.id AS user_id, p.username,
                                p.avatar_url, p.riot_tag,
-                               COALESCE(p.social_links->>'discord_handle', di.identity_data->>'full_name') AS discord_handle,
+                               di.identity_data->>'full_name' AS discord_handle,
                                p.steam_tag
                         FROM team_members tm
                         JOIN profiles p ON p.id = tm.user_id
@@ -2371,7 +2371,7 @@ public static class TournamentEndpoints
                        p.username AS member_username,
                        p.avatar_url AS member_avatar_url,
                        p.riot_tag AS member_riot_tag,
-                       COALESCE(p.social_links->>'discord_handle', mdi.identity_data->>'full_name') AS member_discord_handle,
+                       mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
@@ -2549,7 +2549,7 @@ public static class TournamentEndpoints
                        p.username AS member_username,
                        p.avatar_url AS member_avatar_url,
                        p.riot_tag AS member_riot_tag,
-                       COALESCE(p.social_links->>'discord_handle', mdi.identity_data->>'full_name') AS member_discord_handle,
+                       mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
