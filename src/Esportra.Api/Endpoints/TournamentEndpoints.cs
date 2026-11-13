@@ -590,8 +590,7 @@ public static class TournamentEndpoints
                         SELECT tm.team_id, p.id AS user_id, p.username,
                                p.avatar_url, p.riot_tag,
                                di.identity_data->>'full_name' AS discord_handle,
-                               p.steam_tag,
-                               tm.roster_role::text AS roster_role
+                               p.steam_tag
                         FROM team_members tm
                         JOIN profiles p ON p.id = tm.user_id
                         LEFT JOIN auth.identities di ON di.user_id = tm.user_id AND di.provider = 'discord'
@@ -611,7 +610,6 @@ public static class TournamentEndpoints
                                 riot_tag = m.riot_tag as string,
                                 discord_handle = m.discord_handle as string,
                                 steam_tag = m.steam_tag as string,
-                                roster_role = m.roster_role as string,
                             }).ToList());
 
                     foreach (var p in allParticipants)
@@ -2375,7 +2373,6 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       tm.roster_role::text AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2408,7 +2405,6 @@ public static class TournamentEndpoints
                         ["user_id"] = (Guid)m.member_user_id,
                         ["username"] = (string)m.member_username
                     };
-                    member["roster_role"] = m.member_roster_role as string;
                     if (access.IsOrganizer)
                     {
                         member["avatar_url"] = m.member_avatar_url as string;
@@ -2555,7 +2551,6 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       tm.roster_role::text AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2591,7 +2586,6 @@ public static class TournamentEndpoints
                                 ["user_id"] = (Guid)m.member_user_id,
                                 ["username"] = (string)m.member_username
                             };
-                            member["roster_role"] = m.member_roster_role as string;
                             if (access.IsOrganizer)
                             {
                                 member["avatar_url"] = m.member_avatar_url as string;
