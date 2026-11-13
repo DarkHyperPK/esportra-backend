@@ -528,7 +528,10 @@ public static class TournamentEndpoints
                 SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
                        p.username AS gamer_tag,
                        p.avatar_url AS user_avatar_url,
-                       p.full_name AS user_full_name
+                       p.full_name AS user_full_name,
+                       p.riot_tag AS solo_riot_tag,
+                       p.social_links->>'discord_handle' AS discord_handle,
+                       p.steam_tag AS solo_steam_tag
                 FROM tournament_participants tp
                 LEFT JOIN teams    ON teams.id = tp.team_id
                 LEFT JOIN profiles p ON p.id   = tp.user_id
