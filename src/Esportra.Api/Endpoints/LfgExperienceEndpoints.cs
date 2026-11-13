@@ -39,6 +39,7 @@ public static class LfgExperienceEndpoints
             """
             SELECT rm.user_id, p.username, p.avatar_url, p.avatar_seed, p.avatar_style,
                    rm.roster_role::text AS roster_role, COALESCE(rm.is_starter, false) AS is_starter,
+                   EXISTS (SELECT 1 FROM public.riot_accounts WHERE user_id = rm.user_id) AS has_riot_account,
                    stats.competitive_tier, stats.competitive_tier_name,
                    stats.kd_ratio, stats.win_rate, stats.matches_analyzed
             FROM public.team_roster_members rm
@@ -245,8 +246,8 @@ public static class LfgExperienceEndpoints
 public sealed record LfgRosterListing(Guid TeamId, string GameSlug);
 
 public sealed record LfgRosterMember(Guid UserId, string? Username, string? AvatarUrl, string? AvatarSeed,
-    string? AvatarStyle, string? RosterRole, bool IsStarter, int? CompetitiveTier,
-    string? CompetitiveTierName, decimal? KdRatio, decimal? WinRate, int? MatchesAnalyzed);
+    string? AvatarStyle, string? RosterRole, bool IsStarter, bool HasRiotAccount,
+    int? CompetitiveTier, string? CompetitiveTierName, decimal? KdRatio, decimal? WinRate, int? MatchesAnalyzed);
 
 public sealed record LfgInboxRow
 {

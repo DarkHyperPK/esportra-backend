@@ -308,8 +308,10 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         members.Should().HaveCount(2);
         var ownerRow = members.Single(item => item.GetProperty("userId").GetGuid() == owner);
         ownerRow.GetProperty("kdRatio").GetDecimal().Should().Be(1.11m);
+        ownerRow.GetProperty("hasRiotAccount").GetBoolean().Should().BeTrue();
         var visible = members.Single(item => item.GetProperty("userId").GetGuid() == member);
         visible.GetProperty("kdRatio").GetDecimal().Should().Be(1.50m);
+        visible.GetProperty("hasRiotAccount").GetBoolean().Should().BeTrue();
         visible.TryGetProperty("email", out _).Should().BeFalse();
         visible.TryGetProperty("riotPuuid", out _).Should().BeFalse();
         using var guest = Anon();
