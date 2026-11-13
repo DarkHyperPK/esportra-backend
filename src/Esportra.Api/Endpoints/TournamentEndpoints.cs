@@ -530,11 +530,12 @@ public static class TournamentEndpoints
                        p.avatar_url AS user_avatar_url,
                        p.full_name AS user_full_name,
                        p.riot_tag AS solo_riot_tag,
-                       p.social_links->>'discord_handle' AS discord_handle,
+                       COALESCE(p.social_links->>'discord_handle', di.identity_data->>'full_name') AS discord_handle,
                        p.steam_tag AS solo_steam_tag
                 FROM tournament_participants tp
                 LEFT JOIN teams    ON teams.id = tp.team_id
                 LEFT JOIN profiles p ON p.id   = tp.user_id
+                LEFT JOIN auth.identities di ON di.user_id = tp.user_id AND di.provider = 'discord'
                 WHERE tp.tournament_id = @tournamentId
                 ORDER BY tp.created_at ASC
                 """,
@@ -588,10 +589,11 @@ public static class TournamentEndpoints
                         """
                         SELECT tm.team_id, p.id AS user_id, p.username,
                                p.avatar_url, p.riot_tag,
-                               p.social_links->>'discord_handle' AS discord_handle,
+                               COALESCE(p.social_links->>'discord_handle', di.identity_data->>'full_name') AS discord_handle,
                                p.steam_tag
                         FROM team_members tm
                         JOIN profiles p ON p.id = tm.user_id
+                        LEFT JOIN auth.identities di ON di.user_id = tm.user_id AND di.provider = 'discord'
                         WHERE tm.team_id = ANY(@teamIds) AND tm.is_active = true
                         ORDER BY tm.display_order, p.username
                         """, new { teamIds });
@@ -2369,7 +2371,7 @@ public static class TournamentEndpoints
                        p.username AS member_username,
                        p.avatar_url AS member_avatar_url,
                        p.riot_tag AS member_riot_tag,
-                       p.social_links->>'discord_handle' AS member_discord_handle,
+                       COALESCE(p.social_links->>'discord_handle', mdi.identity_data->>'full_name') AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
@@ -2381,6 +2383,7 @@ public static class TournamentEndpoints
                   AND tm.is_active = true
                   AND COALESCE(tp.participant_type::text, '') != 'solo'
                 LEFT JOIN profiles p ON p.id = tm.user_id
+                LEFT JOIN auth.identities mdi ON mdi.user_id = tm.user_id AND mdi.provider = 'discord'
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id AND tp.id = @pid
                 ORDER BY tp.created_at ASC
@@ -2546,7 +2549,7 @@ public static class TournamentEndpoints
                        p.username AS member_username,
                        p.avatar_url AS member_avatar_url,
                        p.riot_tag AS member_riot_tag,
-                       p.social_links->>'discord_handle' AS member_discord_handle,
+                       COALESCE(p.social_links->>'discord_handle', mdi.identity_data->>'full_name') AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
@@ -2558,6 +2561,7 @@ public static class TournamentEndpoints
                   AND tm.is_active = true
                   AND COALESCE(tp.participant_type::text, '') != 'solo'
                 LEFT JOIN profiles p ON p.id = tm.user_id
+                LEFT JOIN auth.identities mdi ON mdi.user_id = tm.user_id AND mdi.provider = 'discord'
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id {statusFilter}
                 ORDER BY tp.created_at ASC
