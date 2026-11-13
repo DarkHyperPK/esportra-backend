@@ -595,7 +595,11 @@ public static class TournamentEndpoints
                                p.avatar_url, p.riot_tag,
                                di.identity_data->>'full_name' AS discord_handle,
                                p.steam_tag,
-                               COALESCE(trm.roster_role::text, tm.role::text) AS roster_role
+                               CASE
+                                 WHEN tm.role = 'captain' AND COALESCE(trm.roster_role::text, 'starter') = 'starter'
+                                   THEN 'captain'
+                                 ELSE COALESCE(trm.roster_role::text, tm.role::text)
+                               END AS roster_role
                         FROM team_members tm
                         JOIN profiles p ON p.id = tm.user_id
                         LEFT JOIN auth.identities di ON di.user_id = tm.user_id AND di.provider = 'discord'
@@ -2382,7 +2386,11 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       COALESCE(trm.roster_role::text, tm.role::text) AS member_roster_role,
+                       CASE
+                         WHEN tm.role = 'captain' AND COALESCE(trm.roster_role::text, 'starter') = 'starter'
+                           THEN 'captain'
+                         ELSE COALESCE(trm.roster_role::text, tm.role::text)
+                       END AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
@@ -2564,7 +2572,11 @@ public static class TournamentEndpoints
                        p.riot_tag AS member_riot_tag,
                        mdi.identity_data->>'full_name' AS member_discord_handle,
                        p.steam_tag AS member_steam_tag,
-                       COALESCE(trm.roster_role::text, tm.role::text) AS member_roster_role,
+                       CASE
+                         WHEN tm.role = 'captain' AND COALESCE(trm.roster_role::text, 'starter') = 'starter'
+                           THEN 'captain'
+                         ELSE COALESCE(trm.roster_role::text, tm.role::text)
+                       END AS member_roster_role,
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
