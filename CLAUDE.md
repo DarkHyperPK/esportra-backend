@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL: Branch policy
+
+**NEVER push to `main`.** All work goes to `staging` only. Pushing to `main` triggers a production deployment. Only the user may authorize a main push with an explicit instruction naming `main`. No exception, no agent delegation override.
+
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
