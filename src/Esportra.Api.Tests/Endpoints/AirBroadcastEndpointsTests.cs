@@ -70,6 +70,68 @@ public sealed class AirBroadcastEndpointsTests(ApiFactory factory)
     }
 
     [Fact]
+    public async Task GetVeto_FollowsTheRealVeto_CustomOrderTurnTossDeciderAndReset()
+    {
+        var s = await Seed();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE brkt_matches SET best_of=3 WHERE id=@id", new { id = s.Match });
+        var teams = await conn.QuerySingleAsync<(Guid A, Guid B)>("SELECT team1_id, team2_id FROM brkt_matches WHERE id=@id", new { id = s.Match });
+        // A custom order where team 2 bans first.
+        var custom = JsonSerializer.Serialize(new object[]
+        {
+            new { action_number = 1, action = "ban", team = "T2", is_decider = false }, new { action_number = 2, action = "ban", team = "T1", is_decider = false },
+            new { action_number = 3, action = "pick", team = "T2", is_decider = false }, new { action_number = 4, action = "pick_side", team = "T1", is_decider = false },
+            new { action_number = 5, action = "pick", team = "T1", is_decider = false }, new { action_number = 6, action = "pick_side", team = "T2", is_decider = false },
+            new { action_number = 7, action = "ban", team = "T2", is_decider = false }, new { action_number = 8, action = "ban", team = "T1", is_decider = false },
+            new { action_number = 9, action = "pick_side", team = "T2", is_decider = true },
+        });
+        await conn.ExecuteAsync("INSERT INTO match_veto_settings (match_id, mode, sequence) VALUES (@match, 'custom', @custom::jsonb)", new { match = s.Match, custom });
+        var veto = await conn.QuerySingleAsync<Guid>("""
+            INSERT INTO match_map_vetos (match_id, tournament_id, team1_id, team2_id, status, best_of, toss_winner_team_id)
+            VALUES (@match, @tournament, @a, @b, 'toss_choice_pending', 3, @a) RETURNING id
+            """, new { match = s.Match, tournament = s.Tournament, a = teams.A, b = teams.B });
+        async Task<JsonElement> Read() => await s.Client.GetFromJsonAsync<JsonElement>($"/api/air/broadcast/matches/{s.Match}/veto");
+
+        var body = await Read();
+        body.GetProperty("toss").GetProperty("pending").GetBoolean().Should().BeTrue();
+        body.GetProperty("toss").GetProperty("winner").GetInt32().Should().Be(0);
+        body.GetProperty("sequence").EnumerateArray().Select(x => $"{x.GetProperty("action").GetString()}:{x.GetProperty("team").GetInt32()}")
+            .Should().Equal("ban:1", "ban:0", "pick:1", "pick:0", "ban:1", "ban:0", "decider:-1");
+
+        // In progress: whose turn, and its timer.
+        await conn.ExecuteAsync("UPDATE match_map_vetos SET status='in_progress', toss_completed_at=now(), current_team_id=@b, current_action='ban', turn_started_at=now(), turn_duration_seconds=45 WHERE id=@veto", new { veto, b = teams.B });
+        body = await Read();
+        body.GetProperty("turn").GetProperty("team").GetInt32().Should().Be(1);
+        body.GetProperty("turn").GetProperty("seconds").GetInt32().Should().Be(45);
+        body.GetProperty("toss").GetProperty("pending").GetBoolean().Should().BeFalse();
+
+        // Finished: sides from pick_side, and the decider from the selected map even without its own action.
+        var ids = new Dictionary<string, Guid>();
+        foreach (var name in new[] { "Bind", "Abyss", "Lotus", "Haven", "Ascent", "Corrode", "Sunset" }) ids[name] = await MapId(conn, name);
+        await conn.ExecuteAsync("""
+            INSERT INTO match_map_veto_actions (veto_id, match_id, team_id, action_type, map_id, action_number, team_side, side) VALUES
+              (@veto, @match, @b, 'ban', @bind, 1, 'team2', NULL), (@veto, @match, @a, 'ban', @abyss, 2, 'team1', NULL),
+              (@veto, @match, @b, 'pick', @lotus, 3, 'team2', NULL), (@veto, @match, @a, 'pick_side', @lotus, 4, 'team1', 'attack'),
+              (@veto, @match, @a, 'pick', @haven, 5, 'team1', NULL), (@veto, @match, @b, 'pick_side', @haven, 6, 'team2', 'defense'),
+              (@veto, @match, @b, 'ban', @ascent, 7, 'team2', NULL), (@veto, @match, @a, 'ban', @corrode, 8, 'team1', NULL)
+            """, new { veto, match = s.Match, a = teams.A, b = teams.B, bind = ids["Bind"], abyss = ids["Abyss"], lotus = ids["Lotus"], haven = ids["Haven"], ascent = ids["Ascent"], corrode = ids["Corrode"] });
+        await conn.ExecuteAsync("UPDATE match_map_vetos SET status='completed', current_team_id=NULL, current_action=NULL, selected_map_id=@sunset WHERE id=@veto", new { veto, sunset = ids["Sunset"] });
+        body = await Read();
+        body.GetProperty("turn").ValueKind.Should().Be(JsonValueKind.Null);
+        var steps = body.GetProperty("steps").EnumerateArray().ToArray();
+        steps.Select(x => $"{x.GetProperty("team").GetInt32()}:{x.GetProperty("action").GetString()}:{x.GetProperty("map").GetString()}")
+            .Should().Equal("1:ban:Bind", "0:ban:Abyss", "1:pick:Lotus", "0:pick:Haven", "1:ban:Ascent", "0:ban:Corrode", "-1:decider:Sunset");
+        (steps[2].GetProperty("side").GetString(), steps[2].GetProperty("sideTeam").GetInt32()).Should().Be(("ATK", 0));
+        (steps[3].GetProperty("side").GetString(), steps[3].GetProperty("sideTeam").GetInt32()).Should().Be(("DEF", 1));
+
+        // The organizer resets the veto on Esportra: every action goes, and so does Air's copy.
+        await conn.ExecuteAsync("DELETE FROM match_map_veto_actions WHERE veto_id=@veto; UPDATE match_map_vetos SET status='pending', selected_map_id=NULL WHERE id=@veto", new { veto });
+        body = await Read();
+        body.GetProperty("status").GetString().Should().Be("pending");
+        body.GetProperty("steps").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
     public async Task GetRoster_ReturnsTheRegisteredLineupWithVerifiedRiotIds()
     {
         var s = await Seed();
