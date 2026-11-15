@@ -23,3 +23,13 @@ public sealed record LicenseResult<T>(T? Value, string? Error)
     public static LicenseResult<T> Err(string error) => new(default, error);
     public bool IsOk => Error is null;
 }
+
+/// <summary>
+/// Result of a publish-time quota check (PROJ-077).
+/// Tells the caller whether the organizer may publish another free-quota event this month.
+/// </summary>
+public sealed record PublishQuotaResult(
+    bool IsAllowed,
+    int UsedThisMonth,
+    int MonthlyLimit,
+    string ResetsAt);
