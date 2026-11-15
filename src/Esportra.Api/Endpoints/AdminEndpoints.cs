@@ -446,7 +446,130 @@ public static class AdminEndpoints
             return Results.Ok(new { users = enriched, total, roleCounts, adminCount });
         }).RequireAuthorization("Admin");
 
+        // ── GET /api/admin/organizations ─────────────────────────────────────
+        // Paginated organization list with search for admin dashboard
+        app.MapGet("/api/admin/organizations", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int limit = 20,
+            [FromQuery] int offset = 0,
+            [FromQuery] string? search = null,
+            [FromQuery] string? subscription_tier = null,
+            [FromQuery] string? is_verified = null,
+            [FromQuery] string? has_custom_quota = null,
+            [FromQuery] string? sort_by = null,
+            [FromQuery] string? sort_dir = null,
+            CancellationToken ct = default) =>
+        {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
 
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            if (!string.IsNullOrWhiteSpace(search))
+                conditions.Add("(o.name ILIKE @search ESCAPE '\\' OR o.slug ILIKE @search ESCAPE '\\' OR p.username ILIKE @search ESCAPE '\\')");
+            if (!string.IsNullOrWhiteSpace(subscription_tier))
+                conditions.Add("o.subscription_tier = @tier");
+            if (is_verified == "true") conditions.Add("o.is_verified = TRUE");
+            else if (is_verified == "false") conditions.Add("(o.is_verified = FALSE OR o.is_verified IS NULL)");
+            if (has_custom_quota == "true") conditions.Add("o.monthly_event_quota IS NOT NULL");
+            else if (has_custom_quota == "false") conditions.Add("o.monthly_event_quota IS NULL");
+
+            var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
+
+            var allowedSorts = new HashSet<string> { "created_at", "name", "tournament_count" };
+            var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
+            var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
+
+            var sql = $"""
+                SELECT
+                    o.id,
+                    o.name,
+                    o.slug,
+                    o.logo_url,
+                    o.owner_id,
+                    p.username AS owner_name,
+                    p.avatar_url AS owner_avatar,
+                    o.subscription_tier,
+                    o.is_verified,
+                    o.monthly_event_quota,
+                    COALESCE(o.monthly_event_quota, 2) AS effective_quota,
+                    o.created_at,
+                    (SELECT COUNT(*)::int FROM tournaments t2 WHERE t2.organization_id = o.id) AS tournament_count,
+                    (SELECT COUNT(*)::int FROM organization_staff os WHERE os.organization_id = o.id AND os.status = 'active') AS staff_count,
+                    (SELECT COUNT(*)::int FROM event_licenses el
+                       JOIN tournaments t ON t.id = el.tournament_id
+                       WHERE el.organization_id = o.id
+                         AND el.is_free_quota = TRUE
+                         AND t.status NOT IN ('draft', 'cancelled')
+                         AND date_trunc('month', el.created_at) = date_trunc('month', NOW())
+                    ) AS used_this_month
+                FROM organizations o
+                LEFT JOIN profiles p ON p.id = o.owner_id
+                {where}
+                ORDER BY {sortColumn} {sortDirection}
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var orgs = await conn.QueryAsync<dynamic>(sql,
+                new { search = EscapeLike(search), tier = subscription_tier, limit, offset });
+
+            var total = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM organizations o LEFT JOIN profiles p ON p.id = o.owner_id {where}",
+                new { search = EscapeLike(search), tier = subscription_tier });
+
+            var tierCountRows = await conn.QueryAsync<dynamic>(
+                "SELECT subscription_tier, COUNT(*)::int AS count FROM organizations GROUP BY subscription_tier");
+            var tierCounts = new Dictionary<string, int>();
+            foreach (var r in tierCountRows)
+                tierCounts[(string)r.subscription_tier] = (int)r.count;
+
+            return Results.Ok(new { organizations = orgs, total, tierCounts });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/organizations/{id} ────────────────────────────────
+        app.MapGet("/api/admin/organizations/{id:guid}", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT
+                    o.*,
+                    p.username AS owner_name,
+                    p.avatar_url AS owner_avatar,
+                    p.email AS owner_email,
+                    p.full_name AS owner_full_name,
+                    COALESCE(o.monthly_event_quota, 2) AS effective_quota,
+                    (SELECT COUNT(*)::int FROM tournaments t2 WHERE t2.organization_id = o.id) AS tournament_count,
+                    (SELECT COUNT(*)::int FROM organization_staff os WHERE os.organization_id = o.id AND os.status = 'active') AS staff_count,
+                    (SELECT COUNT(*)::int FROM event_licenses el
+                       JOIN tournaments t ON t.id = el.tournament_id
+                       WHERE el.organization_id = o.id
+                         AND el.is_free_quota = TRUE
+                         AND t.status NOT IN ('draft', 'cancelled')
+                         AND date_trunc('month', el.created_at) = date_trunc('month', NOW())
+                    ) AS used_this_month
+                FROM organizations o
+                LEFT JOIN profiles p ON p.id = o.owner_id
+                WHERE o.id = @id
+                """,
+                new { id });
+
+            if (org is null) return Results.NotFound(new { error = "Organization not found." });
+
+            return Results.Ok(org);
+        }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/analytics ────────────────────────────────────────────
         // Replaces 8 parallel supabase count queries
