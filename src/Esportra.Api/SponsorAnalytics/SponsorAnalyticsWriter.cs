@@ -280,7 +280,7 @@ public sealed class SponsorAnalyticsWriter(
                 VALUES (@SponsorId, @FactDate, @TournamentId, @TournamentName, @Placement,
                         CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
                         CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
-                ON CONFLICT (sponsor_id, stat_date, tournament_id, placement_zone) DO UPDATE SET
+                ON CONFLICT (sponsor_id, stat_date, tournament_id, placement_zone) WHERE tournament_id IS NOT NULL DO UPDATE SET
                     tournament_name = EXCLUDED.tournament_name,
                     impressions = sponsor_slot_daily_stats.impressions + EXCLUDED.impressions,
                     clicks      = sponsor_slot_daily_stats.clicks      + EXCLUDED.clicks
