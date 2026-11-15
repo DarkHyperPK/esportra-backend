@@ -36,6 +36,87 @@ public sealed class EventLicenseServiceTests
         db.QueueCount.Should().Be(0, "no INSERT should be attempted when maxTeams > 32");
     }
 
+    // ── PROJ-077: CheckPublishQuotaAsync ────────────────────────────────────
+    // Uses FakeDbConnectionFactory to simulate the two database calls:
+    // 1. COUNT of free-quota published events this month (ExecuteScalar)
+    // 2. COALESCE(monthly_event_quota, 2) for the org (ExecuteScalar)
+
+    [Fact]
+    public async Task CheckPublishQuota_UnderLimit_ReturnsAllowed()
+    {
+        var db = new FakeDbConnectionFactory();
+        // Query 1: usedThisMonth = 1
+        db.EnqueueSingleRowResult(1);
+        // Query 2: monthlyLimit = 2 (default)
+        db.EnqueueSingleRowResult(2);
+
+        var cache = new PassthroughHybridCache();
+        var svc = new EventLicenseService(db, cache, BuildConfig());
+
+        var result = await svc.CheckPublishQuotaAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        result.IsAllowed.Should().BeTrue();
+        result.UsedThisMonth.Should().Be(1);
+        result.MonthlyLimit.Should().Be(2);
+        result.ResetsAt.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task CheckPublishQuota_AtLimit_ReturnsDenied()
+    {
+        var db = new FakeDbConnectionFactory();
+        // Query 1: usedThisMonth = 2
+        db.EnqueueSingleRowResult(2);
+        // Query 2: monthlyLimit = 2
+        db.EnqueueSingleRowResult(2);
+
+        var cache = new PassthroughHybridCache();
+        var svc = new EventLicenseService(db, cache, BuildConfig());
+
+        var result = await svc.CheckPublishQuotaAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        result.IsAllowed.Should().BeFalse();
+        result.UsedThisMonth.Should().Be(2);
+        result.MonthlyLimit.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CheckPublishQuota_CustomOrgLimit_RespectsOverride()
+    {
+        var db = new FakeDbConnectionFactory();
+        // Query 1: usedThisMonth = 5
+        db.EnqueueSingleRowResult(5);
+        // Query 2: monthlyLimit = 10 (admin override)
+        db.EnqueueSingleRowResult(10);
+
+        var cache = new PassthroughHybridCache();
+        var svc = new EventLicenseService(db, cache, BuildConfig());
+
+        var result = await svc.CheckPublishQuotaAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        result.IsAllowed.Should().BeTrue();
+        result.UsedThisMonth.Should().Be(5);
+        result.MonthlyLimit.Should().Be(10);
+    }
+
+    [Fact]
+    public async Task CheckPublishQuota_ResetsAt_IsFirstOfNextMonth()
+    {
+        var db = new FakeDbConnectionFactory();
+        db.EnqueueSingleRowResult(0);
+        db.EnqueueSingleRowResult(2);
+
+        var cache = new PassthroughHybridCache();
+        var svc = new EventLicenseService(db, cache, BuildConfig());
+
+        var result = await svc.CheckPublishQuotaAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        var now = DateTime.UtcNow;
+        var expectedResetMonth = now.Month == 12 ? 1 : now.Month + 1;
+        var expectedResetYear = now.Month == 12 ? now.Year + 1 : now.Year;
+        result.ResetsAt.Should().StartWith($"{expectedResetYear:D4}-{expectedResetMonth:D2}-01T00:00:00Z");
+    }
+
     // ── IsOrganizerPro ────────────────────────────────────────────────────────
     // These tests use a stub subclass that overrides GetForTournamentAsync to
     // return a pre-set value, avoiding the need to drive Dapper with fake column names.

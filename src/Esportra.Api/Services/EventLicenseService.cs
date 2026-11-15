@@ -29,7 +29,7 @@ public class EventLicenseService(
     /// <summary>
     /// Reserves a new license for a tournament immediately after creation.
     /// Returns bracket_upgrade_required when maxTeams > 32 (no INSERT).
-    /// Returns quota_exhausted when the trigger fires (INSERT attempted, DB rejects).
+    /// The monthly quota trigger has been removed (PROJ-077); quota is now enforced at publish time.
     /// </summary>
     public async Task<LicenseResult<EventLicense>> ReserveNewAsync(
         Guid tournamentId,
@@ -74,15 +74,63 @@ public class EventLicenseService(
 
             return LicenseResult<EventLicense>.Ok(license);
         }
-        catch (Npgsql.PostgresException ex) when (ex.Message.Contains("quota_exhausted"))
-        {
-            return LicenseResult<EventLicense>.Err("quota_exhausted");
-        }
         finally
         {
             if (ownConn) conn.Dispose();
         }
     }
+
+    // ── PROJ-077: Publish-time quota check ─────────────────────────────────
+
+    /// <summary>
+    /// Checks whether the organizer may publish another free-quota event this month.
+    /// Counts published (non-draft, non-cancelled) free-quota events in the current
+    /// calendar month and compares against the org's limit (default 2).
+    /// </summary>
+    public async Task<PublishQuotaResult> CheckPublishQuotaAsync(
+        Guid userId,
+        Guid organizationId,
+        CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        var usedThisMonth = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)::int FROM event_licenses el
+            JOIN tournaments t ON t.id = el.tournament_id
+            WHERE el.user_id = @userId
+              AND el.is_free_quota = TRUE
+              AND t.status NOT IN ('draft', 'cancelled')
+              AND date_trunc('month', el.created_at) = date_trunc('month', NOW())
+            """,
+            new { userId });
+
+        var monthlyLimit = await GetOrganizationQuotaLimitAsync(conn, organizationId);
+
+        var now = DateTime.UtcNow;
+        var resetsAt = new DateTime(
+            now.Month == 12 ? now.Year + 1 : now.Year,
+            now.Month == 12 ? 1 : now.Month + 1,
+            1, 0, 0, 0, DateTimeKind.Utc)
+            .ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+        return new PublishQuotaResult(
+            IsAllowed: usedThisMonth < monthlyLimit,
+            UsedThisMonth: usedThisMonth,
+            MonthlyLimit: monthlyLimit,
+            ResetsAt: resetsAt);
+    }
+
+    /// <summary>
+    /// Returns the monthly event quota limit for an organization.
+    /// NULL in the database means the default of 2.
+    /// </summary>
+    public async Task<int> GetOrganizationQuotaLimitAsync(
+        IDbConnection conn,
+        Guid organizationId) =>
+        await conn.ExecuteScalarAsync<int>(
+            "SELECT COALESCE(monthly_event_quota, 2) FROM organizations WHERE id = @orgId",
+            new { orgId = organizationId });
 
     // ── BE-1: GetForTournament ──────────────────────────────────────────────
 

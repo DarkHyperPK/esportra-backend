@@ -895,6 +895,23 @@ public static class TournamentEndpoints
                     return Results.Json(
                         new { error = "license_required", contact_us_url = licenseService.ContactUsUrl },
                         statusCode: 402);
+
+                // PROJ-077: Monthly quota gate at publish time for free-quota licenses.
+                // Paid licenses (is_free_quota = false) bypass this check entirely.
+                if (license is not null && license.IsFreeQuota)
+                {
+                    var quotaCheck = await licenseService.CheckPublishQuotaAsync(
+                        userCtx.UserIdGuid, license.OrganizationId, ct);
+                    if (!quotaCheck.IsAllowed)
+                        return Results.Json(new
+                        {
+                            error = "quota_exhausted",
+                            monthlyLimit = quotaCheck.MonthlyLimit,
+                            usedThisMonth = quotaCheck.UsedThisMonth,
+                            resetsAt = quotaCheck.ResetsAt,
+                            contact_us_url = licenseService.ContactUsUrl,
+                        }, statusCode: 402);
+                }
             }
 
             using var tx = conn.BeginTransaction();

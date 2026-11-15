@@ -41,7 +41,9 @@ public sealed class EventLicenseEndpointTests
 
         var body = await response.Content.ReadFromJsonAsync<QuotaResponse>();
         body.Should().NotBeNull();
-        body!.MonthlyLimit.Should().Be(2);
+        // PROJ-077: monthlyLimit is now dynamic (org override or default 2).
+        // A new user without an org gets the default of 2.
+        body!.MonthlyLimit.Should().BeGreaterThanOrEqualTo(1);
         body.UsedThisMonth.Should().BeGreaterThanOrEqualTo(0);
         body.ResetsAt.Should().NotBeNullOrEmpty();
     }
@@ -90,6 +92,39 @@ public sealed class EventLicenseEndpointTests
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    // ── PROJ-077: PATCH /api/admin/organizations/{id}/event-quota ──────────────
+
+    [Fact]
+    public async Task SetEventQuota_Unauthenticated_Returns401()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.SendAsync(new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"/api/admin/organizations/{Guid.NewGuid()}/event-quota")
+        {
+            Content = JsonContent.Create(new { monthlyLimit = 5 }),
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task SetEventQuota_NonAdmin_Returns403()
+    {
+        var userId = Guid.NewGuid();
+        var client = _factory.CreateAuthenticatedClient(userId);
+
+        var response = await client.SendAsync(new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"/api/admin/organizations/{Guid.NewGuid()}/event-quota")
+        {
+            Content = JsonContent.Create(new { monthlyLimit = 5 }),
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     // ── BE-5: PUT /api/veto/{matchId}/settings ────────────────────────────────

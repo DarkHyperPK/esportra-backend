@@ -20,9 +20,13 @@ public static class EventLicenseEndpoints
     {
         app.MapProEventRequestEndpoints();
         // ── BE-4: GET /api/my/event-licenses/quota ───────────────────────────
+        // PROJ-077: usedThisMonth now counts only published (non-draft, non-cancelled)
+        // free-quota events, matching the publish gate logic. monthlyLimit is read from
+        // the org's monthly_event_quota column (NULL = default 2).
         app.MapGet("/api/my/event-licenses/quota", async (
             HttpContext ctx,
             IDbConnectionFactory db,
+            EventLicenseService licenseService,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -30,13 +34,16 @@ public static class EventLicenseEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Count published free-quota events this month (matches publish gate logic).
             var used = await conn.ExecuteScalarAsync<int>(
                 """
                 SELECT COUNT(*)::int
-                FROM event_licenses
-                WHERE user_id = @userId
-                  AND is_free_quota = TRUE
-                  AND date_trunc('month', created_at) = date_trunc('month', NOW())
+                FROM event_licenses el
+                JOIN tournaments t ON t.id = el.tournament_id
+                WHERE el.user_id = @userId
+                  AND el.is_free_quota = TRUE
+                  AND t.status NOT IN ('draft', 'cancelled')
+                  AND date_trunc('month', el.created_at) = date_trunc('month', NOW())
                 """,
                 new { userId = userCtx.UserIdGuid });
 
@@ -47,6 +54,15 @@ public static class EventLicenseEndpoints
                 WHERE user_id = @userId
                 """,
                 new { userId = userCtx.UserIdGuid });
+
+            // Look up the user's organization for the dynamic quota limit.
+            var orgId = await conn.ExecuteScalarAsync<Guid?>(
+                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+
+            var monthlyLimit = orgId.HasValue
+                ? await licenseService.GetOrganizationQuotaLimitAsync(conn, orgId.Value)
+                : 2; // No org = default limit
 
             var now = DateTime.UtcNow;
             var resetsAt = new DateTime(
@@ -59,7 +75,7 @@ public static class EventLicenseEndpoints
             return Results.Ok(new
             {
                 usedThisMonth = used,
-                monthlyLimit = 2,
+                monthlyLimit,
                 resetsAt = resetsAt.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 isOrganizerPro,
             });
@@ -171,7 +187,70 @@ public static class EventLicenseEndpoints
 
             return Results.Ok(new { tournamentId = id, hasOrganizerPro = req.Enabled ?? false, bracketTier = req.BracketTier });
         }).RequireAuthorization("Admin");
+
+        // ── PROJ-077: PATCH /api/admin/organizations/{id}/event-quota ────────
+        // Sets a per-org monthly event quota override. NULL = default 2.
+        app.MapMethods("/api/admin/organizations/{id:guid}/event-quota", ["PATCH"], async (
+            Guid id,
+            [FromBody] SetEventQuotaRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.MonthlyLimit < 1)
+                return Results.BadRequest(new { error = "monthly_limit_must_be_at_least_1" });
+
+            using var conn = db.CreateConnection();
+
+            var orgExists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @id)",
+                new { id });
+            if (!orgExists)
+                return Results.NotFound(new { error = "Organization not found." });
+
+            var oldLimit = await conn.ExecuteScalarAsync<int>(
+                "SELECT COALESCE(monthly_event_quota, 2) FROM organizations WHERE id = @id",
+                new { id });
+
+            await conn.ExecuteAsync(
+                "UPDATE organizations SET monthly_event_quota = @limit WHERE id = @id",
+                new { limit = req.MonthlyLimit, id });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO staff_audit_log
+                    (organization_id, actor_id, action, target_type, target_id, details)
+                VALUES
+                    (@orgId, @actorId, 'set_event_quota', 'organization', @targetId::text, @details::jsonb)
+                """,
+                new
+                {
+                    orgId = id,
+                    actorId = userCtx.UserIdGuid,
+                    targetId = id.ToString(),
+                    details = JsonSerializer.Serialize(new
+                    {
+                        organization_id = id,
+                        old_limit = oldLimit,
+                        new_limit = req.MonthlyLimit,
+                        actor_user_id = userCtx.UserIdGuid,
+                    }),
+                });
+
+            return Results.Ok(new
+            {
+                organizationId = id,
+                oldLimit,
+                newLimit = req.MonthlyLimit,
+            });
+        }).RequireAuthorization("Admin");
     }
 }
 
 public sealed record SetOrganizerProRequest(bool? Enabled = null, string? BracketTier = null);
+
+/// <summary>Request body for PATCH /api/admin/organizations/{id}/event-quota (PROJ-077).</summary>
+public sealed record SetEventQuotaRequest(int MonthlyLimit);
