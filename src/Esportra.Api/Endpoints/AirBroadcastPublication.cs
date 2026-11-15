@@ -53,9 +53,8 @@ public static partial class AirBroadcastEndpoints
             new ShowTeamSlot(match.TeamA,match.TagA,match.LogoA,match.ScoreA,match.Team1Id,rosters.GetValueOrDefault(match.Team1Id) ?? []),
             new ShowTeamSlot(match.TeamB,match.TagB,match.LogoB,match.ScoreB,match.Team2Id,rosters.GetValueOrDefault(match.Team2Id) ?? [])
         };
-        var actions = await conn.QueryAsync<BroadcastVetoAction>("SELECT a.action_number AS ActionNumber,a.action_type AS Action,gm.map_name AS Map,a.team_side AS TeamSide,a.side AS Side FROM match_map_veto_actions a LEFT JOIN game_maps gm ON gm.id=a.map_id WHERE a.match_id=@id ORDER BY a.action_number LIMIT 100", new { id = match.Id });
-        var veto = BroadcastVetoProjection.Project(actions);
-        var maps = (await conn.QueryAsync<string>("SELECT gm.map_name FROM tournament_map_pools p JOIN game_maps gm ON gm.id=p.map_id WHERE p.tournament_id=@id ORDER BY gm.map_name LIMIT 100", new { id = match.TournamentId })).ToArray();
+        var veto = await ReadVetoSteps(conn, match.Id);
+        var maps = await ReadMapPool(conn, match.TournamentId);
         var code = "AIR_" + packageId.ToString("N")[..16].ToUpperInvariant();
         var slot = new ShowMatchSlot(match.Id.ToString(), code, 0, match.Status, teams, match.BestOf, veto, match.ScheduledAt);
         var screens = AirGamePacks.ValorantScreens.Select(s => new ShowRundownSlot(AirGamePacks.ScreenId(packageId, s.Overlay).ToString(), s.Title, s.Type, null, null, s.Overlay, match.Id.ToString(), new BroadcastSegmentPlan("manual", "manual", "manual", 30, [s.Overlay], Transition: new("fade", "Fade", 300)))).ToArray();

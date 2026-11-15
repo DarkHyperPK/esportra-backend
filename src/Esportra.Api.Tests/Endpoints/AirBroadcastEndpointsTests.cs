@@ -33,6 +33,72 @@ public sealed class AirBroadcastEndpointsTests(ApiFactory factory)
         await conn.ExecuteAsync("UPDATE tournaments SET game=@game WHERE id=@tournament", new { game, tournament });
         return (user, match, tournament, device, client);
     }
+    private static async Task<Guid> MapId(NpgsqlConnection conn, string name)
+    {
+        var id = await conn.ExecuteScalarAsync<Guid?>("SELECT id FROM game_maps WHERE game='valorant' AND map_name=@name LIMIT 1", new { name });
+        return id ?? await conn.QuerySingleAsync<Guid>("INSERT INTO game_maps (game, map_name) VALUES ('valorant', @name) RETURNING id", new { name });
+    }
+
+    [Fact]
+    public async Task GetVeto_ReturnsStepsAsTheTeamsMakeThem_ForTheMatchOwnerOnly()
+    {
+        var s = await Seed();
+        await using var conn = factory.Seeder.OpenConnection();
+        var teams = await conn.QuerySingleAsync<(Guid A, Guid B)>("SELECT team1_id, team2_id FROM brkt_matches WHERE id=@id", new { id = s.Match });
+        var veto = await conn.QuerySingleAsync<Guid>("INSERT INTO match_map_vetos (match_id, tournament_id, team1_id, team2_id, status) VALUES (@match, @tournament, @a, @b, 'in_progress') RETURNING id", new { match = s.Match, tournament = s.Tournament, a = teams.A, b = teams.B });
+        var bind = await MapId(conn, "Bind");
+        var lotus = await MapId(conn, "Lotus");
+        await conn.ExecuteAsync("INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@t, @bind), (@t, @lotus)", new { t = s.Tournament, bind, lotus });
+        await conn.ExecuteAsync("""
+            INSERT INTO match_map_veto_actions (veto_id, match_id, team_id, action_type, map_id, action_number, team_side, side) VALUES
+              (@veto, @match, @a, 'ban', @bind, 1, 'team1', NULL),
+              (@veto, @match, @b, 'pick', @lotus, 2, 'team2', NULL),
+              (@veto, @match, @a, 'side', @lotus, 3, 'team1', 'defense')
+            """, new { veto, match = s.Match, a = teams.A, b = teams.B, bind, lotus });
+
+        var body = await s.Client.GetFromJsonAsync<JsonElement>($"/api/air/broadcast/matches/{s.Match}/veto");
+
+        body.GetProperty("status").GetString().Should().Be("in_progress");
+        var steps = body.GetProperty("steps").EnumerateArray().Select(x => $"{x.GetProperty("team").GetInt32()}:{x.GetProperty("action").GetString()}:{x.GetProperty("map").GetString()}:{(x.GetProperty("side").ValueKind == JsonValueKind.Null ? "" : x.GetProperty("side").GetString())}").ToArray();
+        steps.Should().Equal("0:ban:Bind:", "1:pick:Lotus:DEF");
+        body.GetProperty("mapPool").EnumerateArray().Select(x => x.GetString()).Should().Contain(["Bind", "Lotus"]);
+
+        var outsider = await Seed();
+        (await outsider.Client.GetAsync($"/api/air/broadcast/matches/{s.Match}/veto")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var noDevice = factory.CreateAuthenticatedClient(s.User);
+        (await noDevice.GetAsync($"/api/air/broadcast/matches/{s.Match}/veto")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task GetRoster_ReturnsTheRegisteredLineupWithVerifiedRiotIds()
+    {
+        var s = await Seed();
+        await using var conn = factory.Seeder.OpenConnection();
+        var team = await conn.QuerySingleAsync<Guid>("SELECT team1_id FROM brkt_matches WHERE id=@id", new { id = s.Match });
+        var players = new List<Guid>();
+        for (var i = 0; i < 5; i++)
+        {
+            var player = Guid.NewGuid();
+            await factory.Seeder.SeedAuthUserAsync(player);
+            players.Add(player);
+        }
+        var puuid = $"puuid-{Guid.NewGuid():N}";
+        await conn.ExecuteAsync("INSERT INTO player_riot_accounts (user_id, riot_puuid, game_name, tag_line, verified_at) VALUES (@user, @puuid, 'Orbit', 'NWL', now())", new { user = players[0], puuid });
+        var lineup = JsonSerializer.Serialize(new { starters = players.Select((p, i) => new { displayName = $"Player {i + 1}", userId = p.ToString() }) });
+        await conn.ExecuteAsync("INSERT INTO tournament_participants (tournament_id, user_id, team_id, status, participant_type, roster_lineup, team_members) VALUES (@tournament, @owner, @team, 'approved', 'team', @lineup::jsonb, '[]'::jsonb)", new { tournament = s.Tournament, owner = s.User, team, lineup });
+
+        var body = await s.Client.GetFromJsonAsync<JsonElement>($"/api/air/broadcast/matches/{s.Match}/roster");
+
+        var lineupOut = body.GetProperty("team1").GetProperty("lineup");
+        lineupOut.GetArrayLength().Should().Be(5);
+        lineupOut[0].GetProperty("name").GetString().Should().Be("Player 1");
+        lineupOut[0].GetProperty("gameId").GetString().Should().Be(puuid);
+        lineupOut[0].GetProperty("inGameName").GetString().Should().Be("Orbit#NWL");
+        lineupOut[1].GetProperty("gameId").ValueKind.Should().Be(JsonValueKind.Null, "an unverified player has no Riot id");
+        body.GetProperty("team2").GetProperty("lineup").GetArrayLength().Should().Be(0);
+        body.GetProperty("team1").TryGetProperty("players", out _).Should().BeTrue("the earlier field stays for older Air versions");
+    }
+
     [Fact]
     public async Task Owner_prepares_without_organization_or_web_show_and_sources_are_automatic()
     {
