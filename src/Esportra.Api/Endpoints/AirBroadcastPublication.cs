@@ -7,6 +7,7 @@ using Dapper;
 using Esportra.Api.Services;
 using Esportra.Core.Air;
 using Esportra.Core.Broadcast;
+using Esportra.Core.Match;
 using Esportra.Core.Tournaments;
 
 namespace Esportra.Api.Endpoints;
@@ -17,7 +18,7 @@ public static partial class AirBroadcastEndpoints
     private static string Hash(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     private static async Task<IResult> Prepare(Guid matchId, AirPrepareRequest request, HttpContext ctx,
-        IDbConnectionFactory db, AirAccountService accounts, IEnumerable<IStandingsResolver> resolvers, CancellationToken ct)
+        IDbConnectionFactory db, AirAccountService accounts, IEnumerable<IStandingsResolver> resolvers, VetoSettingsService vetoSettings, CancellationToken ct)
     {
         if (request.RequestId == Guid.Empty) return Results.BadRequest(new { error = "Provide a preparation request identity." });
         using var conn = db.CreateConnection();
@@ -33,7 +34,7 @@ public static partial class AirBroadcastEndpoints
         var package = await conn.QuerySingleAsync<PackageRow>("SELECT id,latest_version AS LatestVersion FROM air_match_packages WHERE owner_id=@userId AND match_id=@matchId FOR UPDATE", new { userId, matchId }, tx);
         var prior = await Read(conn, package.Id, null, request.RequestId, tx);
         if (prior is not null) { tx.Commit(); return Results.Ok(prior); }
-        var configuration = await BuildConfiguration(conn, package.Id, match, resolvers, ct, tx);
+        var configuration = await BuildConfiguration(conn, package.Id, match, resolvers, vetoSettings, ct, tx);
         var sourceHash = Hash(configuration.ToJsonString(JsonOptions));
         var latest = await conn.QuerySingleOrDefaultAsync<string>("SELECT source_hash FROM air_match_package_versions WHERE package_id=@id AND version=@version", new { id = package.Id, version = package.LatestVersion }, tx);
         if (latest == sourceHash) { var unchanged = await Read(conn, package.Id, package.LatestVersion, null, tx); tx.Commit(); return Results.Ok(unchanged); }
@@ -46,16 +47,16 @@ public static partial class AirBroadcastEndpoints
         tx.Commit();
         return Results.Ok(result);
     }
-    private static async Task<JsonObject> BuildConfiguration(IDbConnection conn, Guid packageId, AirMatch match, IEnumerable<IStandingsResolver> resolvers, CancellationToken ct, IDbTransaction tx)
+    private static async Task<JsonObject> BuildConfiguration(IDbConnection conn, Guid packageId, AirMatch match, IEnumerable<IStandingsResolver> resolvers, VetoSettingsService vetoSettings, CancellationToken ct, IDbTransaction tx)
     {
         var rosters = await BroadcastShowEndpoints.ReadRegisteredRosters(conn, match.TournamentId, [match.Team1Id, match.Team2Id]);
         var teams = new[] {
             new ShowTeamSlot(match.TeamA,match.TagA,match.LogoA,match.ScoreA,match.Team1Id,rosters.GetValueOrDefault(match.Team1Id) ?? []),
             new ShowTeamSlot(match.TeamB,match.TagB,match.LogoB,match.ScoreB,match.Team2Id,rosters.GetValueOrDefault(match.Team2Id) ?? [])
         };
-        var actions = await conn.QueryAsync<BroadcastVetoAction>("SELECT a.action_number AS ActionNumber,a.action_type AS Action,gm.map_name AS Map,a.team_side AS TeamSide,a.side AS Side FROM match_map_veto_actions a LEFT JOIN game_maps gm ON gm.id=a.map_id WHERE a.match_id=@id ORDER BY a.action_number LIMIT 100", new { id = match.Id });
-        var veto = BroadcastVetoProjection.Project(actions);
-        var maps = (await conn.QueryAsync<string>("SELECT gm.map_name FROM tournament_map_pools p JOIN game_maps gm ON gm.id=p.map_id WHERE p.tournament_id=@id ORDER BY gm.map_name LIMIT 100", new { id = match.TournamentId })).ToArray();
+        var vetoState = await ReadVetoState(conn, match.Id, match.BestOf, vetoSettings, ct, tx);
+        var veto = vetoState.Steps;
+        var maps = await ReadMapPool(conn, match.TournamentId);
         var code = "AIR_" + packageId.ToString("N")[..16].ToUpperInvariant();
         var slot = new ShowMatchSlot(match.Id.ToString(), code, 0, match.Status, teams, match.BestOf, veto, match.ScheduledAt);
         var screens = AirGamePacks.ValorantScreens.Select(s => new ShowRundownSlot(AirGamePacks.ScreenId(packageId, s.Overlay).ToString(), s.Title, s.Type, null, null, s.Overlay, match.Id.ToString(), new BroadcastSegmentPlan("manual", "manual", "manual", 30, [s.Overlay], Transition: new("fade", "Fade", 300)))).ToArray();
@@ -72,6 +73,9 @@ public static partial class AirBroadcastEndpoints
             node["crew"] = document["crew"]?.DeepClone() ?? new JsonArray();
             node["productionRevision"] = draft.Revision;
         }
+        // The order the veto follows and its status (whose turn it is changes too often to be package content).
+        node["vetoSequence"] = JsonSerializer.SerializeToNode(vetoState.Sequence, JsonOptions);
+        node["vetoStatus"] = vetoState.Status;
         node["sceneAutomationEnabled"] = false;
         node["bracketSnapshot"] = JsonSerializer.SerializeToNode(await BroadcastBracketPresentationEndpoints.ReadAsync(conn, null, match.TournamentId, resolvers, ct), JsonOptions);
         // Retrieval time is not package content. Keeping it in the source hash

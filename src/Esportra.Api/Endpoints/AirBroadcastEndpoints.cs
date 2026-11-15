@@ -55,6 +55,7 @@ public static partial class AirBroadcastEndpoints
         routes.MapPut("/matches/{matchId:guid}/draft", SaveDraft);
         routes.MapGet("/matches/{matchId:guid}/bracket", GetBracket);
         routes.MapGet("/matches/{matchId:guid}/roster", GetRoster);
+        routes.MapGet("/matches/{matchId:guid}/veto", GetVeto);
         routes.MapPost("/packages/{packageId:guid}/events", SavePackageEvents);
         routes.MapGet("/packages/{packageId:guid}/activity", PackageActivity);
         routes.MapGet("/packages/{packageId:guid}/result-proposals", ListAirResults);
@@ -97,12 +98,12 @@ public static partial class AirBroadcastEndpoints
                    p.id AS UserId,
                    COALESCE(p.username, tp.team_name, 'Unknown') AS DisplayName,
                    p.avatar_url AS AvatarUrl,
-                   tp.role AS Role
+                   tp.participant_type::text AS Role
             FROM tournament_participants tp
             LEFT JOIN profiles p ON p.id = tp.user_id
             LEFT JOIN teams t ON t.id = tp.team_id
             WHERE tp.tournament_id = @tournamentId
-              AND tp.status IN ('approved', 'confirmed')
+              AND tp.status::text IN ('approved', 'confirmed')
               AND (tp.team_id = @team1Id OR tp.team_id = @team2Id
                    OR (tp.team_id IS NULL AND tp.id = @team1Id)
                    OR (tp.team_id IS NULL AND tp.id = @team2Id))
@@ -111,11 +112,13 @@ public static partial class AirBroadcastEndpoints
             """, new { tournamentId = match.TournamentId, team1Id = match.Team1Id, team2Id = match.Team2Id });
 
         var byTeam = players.GroupBy(p => p.TeamId).ToDictionary(g => g.Key, g => g.ToArray());
+        // The registered lineup (the players who play, with their verified Riot ids), as prepare reads it.
+        var lineups = await BroadcastShowEndpoints.ReadRegisteredRosters(conn, match.TournamentId, [match.Team1Id, match.Team2Id]);
         return Results.Ok(new
         {
             matchId,
-            team1 = new { id = match.Team1Id, name = match.TeamA, tag = match.TagA, logo = match.LogoA, players = byTeam.GetValueOrDefault(match.Team1Id, []) },
-            team2 = new { id = match.Team2Id, name = match.TeamB, tag = match.TagB, logo = match.LogoB, players = byTeam.GetValueOrDefault(match.Team2Id, []) },
+            team1 = new { id = match.Team1Id, name = match.TeamA, tag = match.TagA, logo = match.LogoA, players = byTeam.GetValueOrDefault(match.Team1Id, []), lineup = lineups.GetValueOrDefault(match.Team1Id) ?? [] },
+            team2 = new { id = match.Team2Id, name = match.TeamB, tag = match.TagB, logo = match.LogoB, players = byTeam.GetValueOrDefault(match.Team2Id, []), lineup = lineups.GetValueOrDefault(match.Team2Id) ?? [] },
         });
     }
 
