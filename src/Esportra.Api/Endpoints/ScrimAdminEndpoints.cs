@@ -1,11 +1,14 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
-using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -152,6 +155,8 @@ public static class ScrimAdminEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -255,6 +260,14 @@ public static class ScrimAdminEndpoints
 
                 await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_dispute_resolved",
                     "Scrim Dispute Resolved", message);
+
+                // S15 — email all staff on both teams about the dispute resolution (best-effort)
+                var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+                var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{resolved.SessionId}";
+                var s15Data = JsonSerializer.Serialize(new { outcome = outcomeLabel, sessionUrl });
+                foreach (var staffId in allStaffIds)
+                    backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                        staffId, "email_scrims", nameof(EmailType.ScrimDisputeResolved), s15Data, CancellationToken.None));
             }
 
             var dispute = await conn.QuerySingleOrDefaultAsync<ScrimDisputeRow>(

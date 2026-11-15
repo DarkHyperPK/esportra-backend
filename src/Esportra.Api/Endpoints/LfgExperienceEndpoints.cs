@@ -1,9 +1,13 @@
-using Dapper;
 using System.Data;
+using System.Text.Json;
+using Dapper;
+using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
-using Esportra.Api.Hubs;
+using Esportra.Infrastructure.Email;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -166,7 +170,8 @@ public static class LfgExperienceEndpoints
     }
 
     public static async Task<IResult> AcceptAsync(Guid interestId, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<ConversationHub> hub, IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory)
+        IHubContext<ConversationHub> hub, IHubContext<NotificationHub> notifHub, ILoggerFactory loggerFactory,
+        IBackgroundJobClient backgroundJobs, IConfiguration config)
     {
         var user = User(ctx);
         if (user is null) return Results.Unauthorized();
@@ -238,6 +243,18 @@ public static class LfgExperienceEndpoints
                     });
             }
             catch { /* persisted; transport failure is non-fatal */ }
+
+            // L2 — email the interested player that they were accepted (best-effort)
+            var ownerUsername = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT username FROM public.profiles WHERE id = @userId", new { userId = user.UserIdGuid });
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            var l2Data = JsonSerializer.Serialize(new
+            {
+                ownerUsername = ownerUsername ?? "The listing owner",
+                conversationUrl = $"{frontendUrl}/inbox/{conversation}"
+            });
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                row.FromUserId, "email_lfg", nameof(EmailType.LfgInterestAccepted), l2Data, CancellationToken.None));
         }
         return Results.Ok(new { interest = updated, conversation_id = conversation });
     }

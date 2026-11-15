@@ -310,6 +310,7 @@ builder.Services.AddCors(opts =>
 // SesEmailService creates its own AmazonSESv2Client per send (cheap, stateless).
 // Registered as singleton; IConfiguration is singleton-safe.
 builder.Services.AddSingleton<IEmailService, SesEmailService>();
+builder.Services.AddScoped<Esportra.Api.Services.CompetitiveEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
@@ -599,6 +600,8 @@ using (var scope = app.Services.CreateScope())
         "recruitment-expiry", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ScrimOfferExpiryJob>(
         "scrim-offer-expiry", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LfgListingExpiringJob>(
+        "lfg-listing-expiring", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));

@@ -1,13 +1,17 @@
 using System.Data;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using Esportra.Api.Hubs;
 
 namespace Esportra.Api.Endpoints;
 
@@ -235,7 +239,8 @@ public static class LfgSwipeEndpoints
     }
 
     private static async Task<IResult> SwipeRightAsync(
-        Guid targetUserId, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> notifHub)
+        Guid targetUserId, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> notifHub,
+        IBackgroundJobClient backgroundJobs, IConfiguration config)
     {
         if (CallerId(ctx) is not { } myId) return Results.Unauthorized();
         if (targetUserId == myId) return Results.BadRequest(new { error = "SELF_SWIPE" });
@@ -249,6 +254,25 @@ public static class LfgSwipeEndpoints
         if (outcome is null) return Results.NotFound(new { error = "TARGET_NOT_ACTIVE" });
         await LfgSwipeMatchmaker.PushAsync(notifHub, outcome.Pushes);
         await LfgSwipeMatchmaker.PushLikeAsync(notifHub, outcome.LikePush);
+
+        // L6 — email both matched players on a fresh mutual match (best-effort)
+        if (outcome.Result.Matched && outcome.Result.Match is not null)
+        {
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            var conversationId = outcome.Result.Match.ConversationId;
+            var matchUrl = $"{frontendUrl}/inbox/{conversationId}";
+            var names = await conn.QueryAsync<(Guid Id, string? Username)>(
+                "SELECT id, username FROM public.profiles WHERE id IN (@myId, @targetUserId)",
+                new { myId, targetUserId });
+            var nameDict = names.ToDictionary(r => r.Id, r => r.Username ?? "A player");
+            var l6DataForMe = JsonSerializer.Serialize(new { matchedUsername = nameDict.GetValueOrDefault(targetUserId, "A player"), matchUrl });
+            var l6DataForTarget = JsonSerializer.Serialize(new { matchedUsername = nameDict.GetValueOrDefault(myId, "A player"), matchUrl });
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                myId, "email_lfg", nameof(EmailType.LfgSwipeMatch), l6DataForMe, CancellationToken.None));
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                targetUserId, "email_lfg", nameof(EmailType.LfgSwipeMatch), l6DataForTarget, CancellationToken.None));
+        }
+
         return Results.Ok(outcome.Result);
     }
 

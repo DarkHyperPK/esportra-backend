@@ -1,12 +1,15 @@
 using System.Data;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -929,6 +932,8 @@ public static class LfgEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> notifHub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1002,6 +1007,17 @@ public static class LfgEndpoints
                 }, ct);
         }
         catch { /* notification persisted; transport failure is non-fatal */ }
+
+        // L1 — email listing owner about new interest (best-effort, non-blocking)
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var l1Data = JsonSerializer.Serialize(new
+        {
+            fromUsername = fromUsername ?? "Someone",
+            listingUrl = $"{frontendUrl}/competitive/lfg/{id}"
+        });
+        backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+            listing.UserId, "email_lfg", nameof(EmailType.LfgInterestReceived), l1Data, CancellationToken.None));
+
         return Results.Ok(row);
     }
 
@@ -1042,6 +1058,8 @@ public static class LfgEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> notifHub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1092,6 +1110,12 @@ public static class LfgEndpoints
                 }, ct);
         }
         catch { /* persisted; transport failure is non-fatal */ }
+
+        // L3 — email the declined player (best-effort, non-blocking)
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var l3Data = JsonSerializer.Serialize(new { discoveryUrl = $"{frontendUrl}/competitive/find-teammates" });
+        backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+            row.FromUserId, "email_lfg", nameof(EmailType.LfgInterestDeclined), l3Data, CancellationToken.None));
 
         return Results.Ok(row);
     }

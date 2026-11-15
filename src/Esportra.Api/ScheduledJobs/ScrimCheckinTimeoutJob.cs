@@ -1,7 +1,9 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
@@ -18,6 +20,7 @@ namespace Esportra.Api.ScheduledJobs;
 public sealed class ScrimCheckinTimeoutJob(
     IDbConnectionFactory db,
     IHubContext<NotificationHub> hub,
+    CompetitiveEmailService emails,
     ILogger<ScrimCheckinTimeoutJob> logger)
 {
     [AutomaticRetry(Attempts = 2)]
@@ -69,6 +72,11 @@ public sealed class ScrimCheckinTimeoutJob(
 
         await TeamNotifications.PushAsync(hub, staffIds, "scrim_timeout_cancelled",
             "Scrim Cancelled — Check-in Timeout", message);
+
+        // S9 — email all staff that the session was cancelled due to timeout
+        var sessionUrl = $"{emails.FrontendUrl}/competitive/scrims/sessions/{sessionId}";
+        foreach (var staffId in staffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimTimeoutCancelled, new { sessionUrl }, ct);
 
         logger.LogInformation("[ScrimCheckinTimeoutJob] Cancelled session {SessionId} due to check-in timeout.", sessionId);
     }

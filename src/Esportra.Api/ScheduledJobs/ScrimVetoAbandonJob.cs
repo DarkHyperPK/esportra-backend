@@ -1,7 +1,9 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
@@ -64,6 +66,7 @@ public sealed class ScrimVetoAbandonJob(
     IHubContext<NotificationHub> hub,
     IBackgroundJobClient jobs,
     Microsoft.Extensions.Options.IOptions<Esportra.Api.Services.ScrimVetoOptions> options,
+    CompetitiveEmailService emails,
     ILogger<ScrimVetoAbandonJob> logger)
 {
     [AutomaticRetry(Attempts = 2)]
@@ -110,6 +113,11 @@ public sealed class ScrimVetoAbandonJob(
 
         await TeamNotifications.PushAsync(hub, staffIds, "scrim_timeout_cancelled",
             "Scrim Cancelled — Veto Abandoned", message);
+
+        // S9 variant — email all staff that the session was cancelled due to veto abandon
+        var sessionUrl = $"{emails.FrontendUrl}/competitive/scrims/sessions/{sessionId}";
+        foreach (var staffId in staffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimTimeoutCancelled, new { sessionUrl }, ct);
 
         logger.LogInformation(
             "[ScrimVetoAbandonJob] Cancelled session {SessionId} due to veto abandon.",
