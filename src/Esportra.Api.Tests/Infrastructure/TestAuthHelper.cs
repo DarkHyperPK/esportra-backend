@@ -32,7 +32,6 @@ public static class TestAuthHelper
             Subject = new ClaimsIdentity([
                 new Claim(JwtRegisteredClaimNames.Sub, userId.ToString()),
                 new Claim(JwtRegisteredClaimNames.Email, email),
-                new Claim(JwtRegisteredClaimNames.Aud, TestAudience),
             ]),
             Audience = TestAudience,
             Expires = DateTime.UtcNow.AddHours(1),
