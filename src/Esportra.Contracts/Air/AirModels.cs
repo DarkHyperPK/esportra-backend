@@ -20,10 +20,14 @@ public sealed record AirReleaseRequest(string Version, string Channel, string Do
 public sealed record AirWorkspaceView(Guid Id, string Name, DateTime CreatedAt);
 public sealed record AirAccountSummary(Guid UserId, DateTime TrialStartedAt, DateTime TrialEndsAt, DateTime? ValidUntil, string Status, Guid PlanId);
 public sealed record AirProjectSummary(Guid Id, Guid WorkspaceId, string Title, int Revision, DateTime UpdatedAt);
-public sealed record AirAdminCustomer(Guid UserId, string Status, DateTime TrialStartedAt, DateTime TrialEndsAt, DateTime? ValidUntil, Guid PlanId, string Plan, string LicenseCode, int Revision, bool OverrideDeviceLimits, int? ProductionLimit, int? CaptureLimit);
+public sealed record AirAdminCustomer(Guid UserId, string Status, DateTime TrialStartedAt, DateTime TrialEndsAt, DateTime? ValidUntil, Guid PlanId, string Plan, string LicenseCode, int Revision, bool OverrideDeviceLimits, int? ProductionLimit, int? CaptureLimit, string? Email, string? Name, long ProductionDevices, DateTime? LastSeenAt);
+public sealed record AirAdminAccessRequest(Guid Id, Guid UserId, string? Email, string? Name, string Note, string Status, string? Reason, DateTime CreatedAt, string? AccountStatus, DateTime? ValidUntil, DateTime? TrialEndsAt);
+public sealed record AirAccessRequestView(Guid Id, string Note, string Status, string? Reason, DateTime CreatedAt, DateTime? DecidedAt);
+public sealed record AirAccessRequestInput(string? Note);
+public sealed record AirCustomerByEmail(string Email);
 public sealed record AirAdminWorkspace(Guid Id, string Name, Guid OwnerId, DateTime CreatedAt, long Projects);
 public sealed record AirPlanView(Guid Id, string Name, int? ProductionLimit, int? CaptureLimit, bool Enabled);
 public sealed record AirDeviceView(Guid Id, Guid UserId, string Name, string Mode, string Status, DateTime LastSeenAt, string Health, int Revision);
 public sealed record AirAdminActivity(long Id, Guid ActorId, string Action, string SubjectId, string Reason, DateTime CreatedAt);
 public sealed record AirReleaseView(Guid Id, string Version, string Channel, string DownloadUrl, string Notes, bool Published, DateTime CreatedAt);
-public sealed record AirAdminCounts(long Customers, long Workspaces, long ActiveDevices, long OnlineDevices, long ExpiredAccess);
+public sealed record AirAdminCounts(long Customers, long Workspaces, long ActiveDevices, long OnlineDevices, long ExpiredAccess, long PendingRequests);

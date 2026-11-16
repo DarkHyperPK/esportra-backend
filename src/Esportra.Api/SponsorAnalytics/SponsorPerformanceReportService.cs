@@ -276,7 +276,7 @@ public sealed class SponsorPerformanceReportService(
         var tournamentRows = (await connection.QueryAsync<SlotRow>(new CommandDefinition(
             """
             SELECT ss.tournament_id AS TournamentId,
-                   t.name AS TournamentName,
+                   COALESCE(t.name, ss.tournament_name) AS TournamentName,
                    ss.placement_zone AS PlacementZone,
                    COALESCE(SUM(ss.impressions), 0) AS Impressions,
                    COALESCE(SUM(ss.clicks), 0) AS Clicks
@@ -284,7 +284,7 @@ public sealed class SponsorPerformanceReportService(
             LEFT JOIN public.tournaments t ON t.id = ss.tournament_id
             WHERE ss.sponsor_id = @sponsorId
               AND ss.stat_date >= @start AND ss.stat_date < @endExclusive
-            GROUP BY ss.tournament_id, t.name, ss.placement_zone
+            GROUP BY ss.tournament_id, COALESCE(t.name, ss.tournament_name), ss.placement_zone
             ORDER BY Impressions DESC
             """,
             new { sponsorId, start, endExclusive },
@@ -359,7 +359,7 @@ public sealed class SponsorPerformanceReportService(
     }
     private sealed record SlotRow
     {
-        public Guid TournamentId { get; init; }
+        public Guid? TournamentId { get; init; }
         public string? TournamentName { get; init; }
         public string PlacementZone { get; init; } = string.Empty;
         public long Impressions { get; init; }
