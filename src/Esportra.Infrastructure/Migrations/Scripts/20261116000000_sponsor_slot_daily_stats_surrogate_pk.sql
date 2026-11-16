@@ -29,7 +29,11 @@ FROM   public.tournaments t
 WHERE  s.tournament_id = t.id
   AND  s.tournament_name IS NULL;
 
--- 6. Replace RESTRICT FK with SET NULL so row attribution is preserved on deletion.
+-- 6. Drop NOT NULL on tournament_id so the SET NULL FK can actually null the column.
+ALTER TABLE public.sponsor_slot_daily_stats
+    ALTER COLUMN tournament_id DROP NOT NULL;
+
+-- 7. Replace RESTRICT FK with SET NULL so row attribution is preserved on deletion.
 ALTER TABLE public.sponsor_slot_daily_stats
     DROP CONSTRAINT IF EXISTS sponsor_slot_daily_stats_tournament_id_fkey;
 
