@@ -56,6 +56,7 @@ public static partial class AirBroadcastEndpoints
         routes.MapGet("/matches/{matchId:guid}/bracket", GetBracket);
         routes.MapGet("/matches/{matchId:guid}/roster", GetRoster);
         routes.MapGet("/matches/{matchId:guid}/veto", GetVeto);
+        routes.MapPost("/matches/{matchId:guid}/veto/actions", VetoAction);
         routes.MapPost("/packages/{packageId:guid}/events", SavePackageEvents);
         routes.MapGet("/packages/{packageId:guid}/activity", PackageActivity);
         routes.MapGet("/packages/{packageId:guid}/result-proposals", ListAirResults);
