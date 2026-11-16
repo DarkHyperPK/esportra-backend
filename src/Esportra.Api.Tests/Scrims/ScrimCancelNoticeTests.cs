@@ -75,6 +75,6 @@ public sealed class ScrimCancelNoticeContractTests
     public void CancelEndpoint_NotifiesTheOpponent_AfterTheCancelSucceeds()
     {
         var source = File.ReadAllText(Path.Combine(Root(), "src", "Esportra.Api", "Endpoints", "ScrimEndpoints.cs"));
-        source.Should().Contain("await NotifyOpponentOfCancelAsync(conn, hub, id);");
+        source.Should().Contain("await NotifyOpponentOfCancelAsync(conn, hub, id,");
     }
 }
