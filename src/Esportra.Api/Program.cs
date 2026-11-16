@@ -701,7 +701,7 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 }).RequireAuthorization("Authenticated");
 
 // ── Phase 1: Edge Function replacements ───────────────────────────────────────
-app.MapHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
+app.MapHangfireDashboard("/api/hangfire", new Hangfire.DashboardOptions
 {
     Authorization = [new Esportra.Api.ScheduledJobs.HangfireDashboardAuthFilter()]
 });
