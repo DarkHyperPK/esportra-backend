@@ -55,8 +55,8 @@ public sealed class ChatNotificationJob(
                 """
                 SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
                 FROM brkt_matches bm
-                JOIN brkt_rounds r ON r.id = bm.round_id
-                JOIN stages s ON s.id = r.stage_id
+                JOIN brkt_versions v ON v.id = bm.version_id
+                JOIN stages s ON s.id = v.stage_id
                 JOIN tournaments t ON t.id = s.tournament_id
                 WHERE bm.id = @matchId
                 """,
