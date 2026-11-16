@@ -685,6 +685,15 @@ app.Use(async (ctx, next) =>
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
+
+// Hangfire dashboard — UseHangfireDashboard (middleware) instead of MapHangfireDashboard
+// (endpoint routing) which has a known bug in 1.8.17 (GitHub #1729, #2541).
+// Placed after role enrichment so UserContext exists for the admin check.
+app.UseHangfireDashboard("/api/hangfire", new Hangfire.DashboardOptions
+{
+    Authorization = [new Esportra.Api.ScheduledJobs.HangfireDashboardAuthFilter()]
+});
+
 app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
 app.UseMiddleware<Esportra.Api.Features.FeatureGateMiddleware>(); // Block API surfaces of features switched off in Admin Centre (409 envelope, 30s cache)
 app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
@@ -701,10 +710,6 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 }).RequireAuthorization("Authenticated");
 
 // ── Phase 1: Edge Function replacements ───────────────────────────────────────
-app.MapHangfireDashboard("/api/hangfire", new Hangfire.DashboardOptions
-{
-    Authorization = [new Esportra.Api.ScheduledJobs.HangfireDashboardAuthFilter()]
-});
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapAdminPublicToolsEndpoints();
