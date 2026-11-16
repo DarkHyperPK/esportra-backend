@@ -10,6 +10,285 @@ namespace Esportra.Infrastructure.Email;
 /// </summary>
 public static class EmailTemplates
 {
+    // ── LFG templates ─────────────────────────────────────────────────────────
+
+    public static (string Subject, string Html) LfgInterestReceived(string fromUsername, string listingUrl) =>
+    (
+        $"Someone is interested in your team listing",
+        Wrap($"{E(fromUsername)} wants to join your squad", "New Interest", $"""
+            {Eyebrow("Find teammates")}
+            {H1("Someone wants in")}
+            {P($"<strong style='color:{Headline};'>{E(fromUsername)}</strong> has expressed interest in joining your team. Review their profile and decide whether to accept or decline.")}
+            {Btn(listingUrl, "View Interest")}
+            {P($"<span style='color:{SubtleText};font-size:13px;'>You can manage all interests from your listing page.</span>")}
+        """)
+    );
+
+    public static (string Subject, string Html) LfgInterestAccepted(string ownerUsername, string conversationUrl) =>
+    (
+        "Your team interest was accepted",
+        Wrap($"{E(ownerUsername)} accepted your interest", "Interest Accepted", $"""
+            {Eyebrow("Find teammates")}
+            {H1("You're in.")}
+            {P($"<strong style='color:{Headline};'>{E(ownerUsername)}</strong> accepted your interest. Head over to coordinate next steps.")}
+            {Btn(conversationUrl, "Open Listing")}
+        """)
+    );
+
+    public static (string Subject, string Html) LfgInterestDeclined(string discoveryUrl) =>
+    (
+        "Your team interest was declined",
+        Wrap("Your interest was declined", "Interest Declined", $"""
+            {Eyebrow("Find teammates")}
+            {H1("Not this time")}
+            {P("The team decided not to move forward with your interest. Keep looking — there are plenty of teams out there.")}
+            {Btn(discoveryUrl, "Browse Listings")}
+        """)
+    );
+
+    public static (string Subject, string Html) LfgListingExpiring(string username, string listingUrl, string expiresAt) =>
+    (
+        "Your team listing expires soon",
+        Wrap("Your listing expires in 24 hours", "Listing Expiring", $"""
+            {Eyebrow("Find teammates")}
+            {H1("Your listing expires soon")}
+            {P($"Hi {E(username)}, your team listing will expire in approximately 24 hours. Renew it now to keep receiving interest from players.")}
+            {SpecOpen()}
+              {InfoRow("Expires at", E(expiresAt), isLast: true)}
+            {SpecClose}
+            {Btn(listingUrl, "Renew Listing")}
+        """)
+    );
+
+    public static (string Subject, string Html) LfgListingExpired(string username, string discoveryUrl) =>
+    (
+        "Your team listing has expired",
+        Wrap("Your listing has expired", "Listing Expired", $"""
+            {Eyebrow("Find teammates")}
+            {H1("Your listing expired")}
+            {P($"Hi {E(username)}, your team listing has expired and is no longer visible to players. Create a new listing to start receiving interest again.")}
+            {Btn(discoveryUrl, "Create New Listing")}
+        """)
+    );
+
+    public static (string Subject, string Html) LfgSwipeMatch(string matchedUsername, string matchUrl) =>
+    (
+        $"You matched with {E(matchedUsername)}",
+        Wrap($"Squad Up match with {E(matchedUsername)}", "New Match", $"""
+            {Eyebrow("Squad up")}
+            {H1("It's a match.")}
+            {P($"You and <strong style='color:{Headline};'>{E(matchedUsername)}</strong> both swiped right. Start a conversation and form your squad.")}
+            {Btn(matchUrl, "Connect Now")}
+        """)
+    );
+
+    // ── Scrim templates ───────────────────────────────────────────────────────
+
+    public static (string Subject, string Html) ScrimOfferReceived(string offeringTeamName, string proposedAt, string workspaceUrl) =>
+    (
+        $"{E(offeringTeamName)} wants to scrim",
+        Wrap($"Scrim offer from {E(offeringTeamName)}", "Scrim Offer", $"""
+            {Eyebrow("Find scrims")}
+            {H1("New scrim offer")}
+            {P($"<strong style='color:{Headline};'>{E(offeringTeamName)}</strong> has sent you a scrim offer. Review and accept or decline from your workspace.")}
+            {SpecOpen()}
+              {InfoRow("From", E(offeringTeamName))}
+              {InfoRow("Proposed time", string.IsNullOrWhiteSpace(proposedAt) ? "Flexible" : E(proposedAt), isLast: true)}
+            {SpecClose}
+            {Btn(workspaceUrl, "Review Offer")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimOfferAccepted(string listingTeamName, string sessionUrl, string? scheduledAt) =>
+    (
+        $"{E(listingTeamName)} accepted your scrim offer",
+        Wrap($"Scrim confirmed with {E(listingTeamName)}", "Offer Accepted", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Scrim confirmed.")}
+            {P($"<strong style='color:{Headline};'>{E(listingTeamName)}</strong> accepted your offer. Your scrim session is now scheduled.")}
+            {(string.IsNullOrWhiteSpace(scheduledAt) ? "" : $"""
+            {SpecOpen()}
+              {InfoRow("Scheduled", E(scheduledAt), isLast: true)}
+            {SpecClose}
+            """)}
+            {Btn(sessionUrl, "Open Session")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimOfferDeclined(string discoveryUrl) =>
+    (
+        "Your scrim offer was declined",
+        Wrap("Scrim offer declined", "Offer Declined", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Offer declined")}
+            {P("The team decided not to proceed with your scrim offer. Browse other listings to find your next match-up.")}
+            {Btn(discoveryUrl, "Browse Listings")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimOfferWithdrawn(string offeringTeamName, string workspaceUrl) =>
+    (
+        $"{E(offeringTeamName)} withdrew their scrim offer",
+        Wrap($"Offer withdrawn by {E(offeringTeamName)}", "Offer Withdrawn", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Offer withdrawn")}
+            {P($"<strong style='color:{Headline};'>{E(offeringTeamName)}</strong> withdrew their scrim offer. Your listing is still active and open to new offers.")}
+            {Btn(workspaceUrl, "View Workspace")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimOfferExpired(string listingTeamName, string discoveryUrl) =>
+    (
+        "Your scrim offer expired",
+        Wrap("Scrim offer expired", "Offer Expired", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Offer expired")}
+            {P($"Your scrim offer to <strong style='color:{Headline};'>{E(listingTeamName)}</strong> expired after 48 hours without a response. Browse listings to send a new offer.")}
+            {Btn(discoveryUrl, "Browse Listings")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimSessionCancelled(string cancellerName, string workspaceUrl) =>
+    (
+        "Your scrim session was cancelled",
+        Wrap($"Session cancelled by {E(cancellerName)}", "Session Cancelled", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Session cancelled")}
+            {P($"<strong style='color:{Headline};'>{E(cancellerName)}</strong> cancelled the upcoming scrim session. You can find a new opponent from the listing board.")}
+            {Btn(workspaceUrl, "Find New Opponent")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimReminder(string opponentName, string scheduledAt, string sessionUrl) =>
+    (
+        "Scrim in 30 minutes",
+        Wrap($"Scrim vs {E(opponentName)} starts soon", "30-Minute Reminder", $"""
+            {Eyebrow("Scrim reminder")}
+            {H1("30 minutes to go")}
+            {P($"Your scrim against <strong style='color:{Headline};'>{E(opponentName)}</strong> starts in 30 minutes. Make sure your team is ready and check in on time.")}
+            {SpecOpen()}
+              {InfoRow("Opponent", E(opponentName))}
+              {InfoRow("Scheduled", E(scheduledAt), isLast: true)}
+            {SpecClose}
+            {Btn(sessionUrl, "Open Session")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimCheckinOpen(string opponentName, string scheduledAt, string sessionUrl) =>
+    (
+        "Check in now — scrim starts in 15 minutes",
+        Wrap($"Check in for your scrim vs {E(opponentName)}", "Check-in Open", $"""
+            {Eyebrow("Check-in open")}
+            {H1("Check in now")}
+            {P($"The check-in window is open for your scrim against <strong style='color:{Headline};'>{E(opponentName)}</strong>. Both teams must check in before the session starts.")}
+            {SpecOpen()}
+              {InfoRow("Opponent", E(opponentName))}
+              {InfoRow("Scheduled", E(scheduledAt), isLast: true)}
+            {SpecClose}
+            {Btn(sessionUrl, "Check In")}
+            {P($"<span style='color:{SubtleText};font-size:13px;'>Failing to check in within 15 minutes may result in automatic cancellation.</span>")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimTimeoutCancelled(string sessionUrl) =>
+    (
+        "Scrim session cancelled — check-in timeout",
+        Wrap("Session cancelled due to no check-in", "Session Cancelled", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Session cancelled")}
+            {P("One or both teams did not check in within the required window. The session has been automatically cancelled.")}
+            {Btn(sessionUrl, "Find New Opponent")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimTimeProposed(string proposingTeamName, string proposedAt, string sessionUrl) =>
+    (
+        $"{E(proposingTeamName)} proposed a new time",
+        Wrap($"Time proposal from {E(proposingTeamName)}", "Time Proposed", $"""
+            {Eyebrow("Find scrims")}
+            {H1("New time proposal")}
+            {P($"<strong style='color:{Headline};'>{E(proposingTeamName)}</strong> has proposed a new time for your scrim. Review and accept or suggest a different time.")}
+            {SpecOpen()}
+              {InfoRow("Proposed time", E(proposedAt), isLast: true)}
+            {SpecClose}
+            {Btn(sessionUrl, "Review Proposal")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimTimeClearRequested(string requestingTeamName, string sessionUrl) =>
+    (
+        $"{E(requestingTeamName)} asked to clear the scrim time",
+        Wrap($"Clear-time request from {E(requestingTeamName)}", "Clear Time Request", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Clear the agreed time?")}
+            {P($"<strong style='color:{Headline};'>{E(requestingTeamName)}</strong> has asked to clear the agreed time for your scrim. You can accept or keep the current schedule.")}
+            {Btn(sessionUrl, "Review Request")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimTimeAccepted(string acceptingTeamName, string scheduledAt, string sessionUrl) =>
+    (
+        $"{E(acceptingTeamName)} confirmed the scrim time",
+        Wrap($"Time confirmed by {E(acceptingTeamName)}", "Time Confirmed", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Time confirmed.")}
+            {P($"<strong style='color:{Headline};'>{E(acceptingTeamName)}</strong> accepted the proposed time. Your scrim is now scheduled.")}
+            {SpecOpen()}
+              {InfoRow("Scheduled", E(scheduledAt), isLast: true)}
+            {SpecClose}
+            {Btn(sessionUrl, "Open Session")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimTimeReset(string sessionUrl) =>
+    (
+        "Scrim time proposal cleared",
+        Wrap("The proposed time was cleared", "Time Reset", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Time proposal cleared")}
+            {P("The proposed scrim time has been cleared. Use the session workspace to propose a new time that works for both teams.")}
+            {Btn(sessionUrl, "Open Session")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimResultSubmitted(string opponentName, string score, string sessionUrl) =>
+    (
+        $"{E(opponentName)} submitted scrim results",
+        Wrap($"Results submitted by {E(opponentName)}", "Results Submitted", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Results submitted")}
+            {P($"<strong style='color:{Headline};'>{E(opponentName)}</strong> has submitted the scrim results. Review and confirm or raise a dispute within the session.")}
+            {(string.IsNullOrWhiteSpace(score) ? "" : $"""
+            {SpecOpen()}
+              {InfoRow("Reported score", E(score), isLast: true)}
+            {SpecClose}
+            """)}
+            {Btn(sessionUrl, "Review Results")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimDisputeRaised(string opponentName, string sessionUrl) =>
+    (
+        $"{E(opponentName)} raised a scrim dispute",
+        Wrap($"Dispute raised by {E(opponentName)}", "Dispute Raised", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Dispute raised")}
+            {P($"<strong style='color:{Headline};'>{E(opponentName)}</strong> has raised a dispute on the scrim results. An Esportra admin will review and resolve it.")}
+            {Btn(sessionUrl, "View Dispute")}
+        """)
+    );
+
+    public static (string Subject, string Html) ScrimDisputeResolved(string outcome, string sessionUrl) =>
+    (
+        "Your scrim dispute has been resolved",
+        Wrap("Scrim dispute resolved", "Dispute Resolved", $"""
+            {Eyebrow("Find scrims")}
+            {H1("Dispute resolved")}
+            {P($"An Esportra admin has resolved the scrim dispute. The final outcome is: <strong style='color:{Headline};'>{E(outcome)}</strong>.")}
+            {Btn(sessionUrl, "View Session")}
+        """)
+    );
+
     public static (string Subject, string Html) BroadcastCrewInvite(string showTitle, string role, string acceptUrl) =>
     (
         $"Broadcast crew invitation: {showTitle.Replace('\r', ' ').Replace('\n', ' ')}",
@@ -795,6 +1074,53 @@ public static class EmailTemplates
                 DisputeComment(
                     Get("referenceNumber"), Get("commenterName"),
                     Get("commentPreview"), Get("disputeUrl"), Get("tournamentName")),
+            // LFG
+            EmailType.LfgInterestReceived =>
+                LfgInterestReceived(Get("fromUsername"), Get("listingUrl")),
+            EmailType.LfgInterestAccepted =>
+                LfgInterestAccepted(Get("ownerUsername"), Get("conversationUrl")),
+            EmailType.LfgInterestDeclined =>
+                LfgInterestDeclined(Get("discoveryUrl")),
+            EmailType.LfgListingExpiring =>
+                LfgListingExpiring(Get("username"), Get("listingUrl"), Get("expiresAt")),
+            EmailType.LfgListingExpired =>
+                LfgListingExpired(Get("username"), Get("discoveryUrl")),
+            EmailType.LfgSwipeMatch =>
+                LfgSwipeMatch(Get("matchedUsername"), Get("matchUrl")),
+            // Scrims
+            EmailType.ScrimOfferReceived =>
+                ScrimOfferReceived(Get("offeringTeamName"), Get("proposedAt"), Get("workspaceUrl")),
+            EmailType.ScrimOfferAccepted =>
+                ScrimOfferAccepted(Get("listingTeamName"), Get("sessionUrl"),
+                    Get("scheduledAt") is { Length: > 0 } sa ? sa : null),
+            EmailType.ScrimOfferDeclined =>
+                ScrimOfferDeclined(Get("discoveryUrl")),
+            EmailType.ScrimOfferWithdrawn =>
+                ScrimOfferWithdrawn(Get("offeringTeamName"), Get("workspaceUrl")),
+            EmailType.ScrimOfferExpired =>
+                ScrimOfferExpired(Get("listingTeamName"), Get("discoveryUrl")),
+            EmailType.ScrimSessionCancelled =>
+                ScrimSessionCancelled(Get("cancellerName"), Get("workspaceUrl")),
+            EmailType.ScrimReminder =>
+                ScrimReminder(Get("opponentName"), Get("scheduledAt"), Get("sessionUrl")),
+            EmailType.ScrimCheckinOpen =>
+                ScrimCheckinOpen(Get("opponentName"), Get("scheduledAt"), Get("sessionUrl")),
+            EmailType.ScrimTimeoutCancelled =>
+                ScrimTimeoutCancelled(Get("sessionUrl")),
+            EmailType.ScrimTimeProposed =>
+                ScrimTimeProposed(Get("proposingTeamName"), Get("proposedAt"), Get("sessionUrl")),
+            EmailType.ScrimTimeClearRequested =>
+                ScrimTimeClearRequested(Get("requestingTeamName"), Get("sessionUrl")),
+            EmailType.ScrimTimeAccepted =>
+                ScrimTimeAccepted(Get("acceptingTeamName"), Get("scheduledAt"), Get("sessionUrl")),
+            EmailType.ScrimTimeReset =>
+                ScrimTimeReset(Get("sessionUrl")),
+            EmailType.ScrimResultSubmitted =>
+                ScrimResultSubmitted(Get("opponentName"), Get("score"), Get("sessionUrl")),
+            EmailType.ScrimDisputeRaised =>
+                ScrimDisputeRaised(Get("opponentName"), Get("sessionUrl")),
+            EmailType.ScrimDisputeResolved =>
+                ScrimDisputeResolved(Get("outcome"), Get("sessionUrl")),
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }

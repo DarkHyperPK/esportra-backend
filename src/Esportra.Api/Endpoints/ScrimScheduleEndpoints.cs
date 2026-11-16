@@ -1,11 +1,14 @@
 using System.Data;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -84,7 +87,8 @@ public static class ScrimScheduleEndpoints
 
     private static async Task<IResult> ProposeAsync(
         Guid id, [FromBody] ProposeTimeRequest req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> hub, CancellationToken ct)
+        IHubContext<NotificationHub> hub, IBackgroundJobClient backgroundJobs, IConfiguration config,
+        CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
 
@@ -129,6 +133,19 @@ public static class ScrimScheduleEndpoints
         var otherTeam = myTeam == session.Team1Id ? session.Team2Id : session.Team1Id;
         await ScrimTeamNotifier.SendAsync(conn, hub, otherTeam, id, "scrim_time_proposed",
             "Match time proposed", "The other team proposed a time for your scrim. Accept it or suggest another.");
+
+        // S10 — email other team staff about the time proposal (best-effort)
+        var proposingTeamName = await conn.ExecuteScalarAsync<string?>(
+            "SELECT name FROM public.teams WHERE id = @teamId", new { teamId = myTeam }) ?? "The other team";
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+        var proposedAtStr = proposedAt.ToString("ddd d MMM yyyy, HH:mm 'UTC'");
+        var s10StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, otherTeam);
+        var s10Data = JsonSerializer.Serialize(new { proposingTeamName, proposedAt = proposedAtStr, sessionUrl });
+        foreach (var staffId in s10StaffIds)
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimTimeProposed), s10Data, CancellationToken.None));
+
         return Results.Ok(proposal);
     }
 
@@ -160,12 +177,12 @@ public static class ScrimScheduleEndpoints
 
     private static async Task<IResult> AcceptAsync(
         Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
-        IBackgroundJobClient jobs, CancellationToken ct)
+        IBackgroundJobClient jobs, IConfiguration config, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         using var conn = db.CreateConnection();
 
-        var (failure, p, _) = await AuthorizeResponseAsync(conn, id, user);
+        var (failure, p, responderTeam) = await AuthorizeResponseAsync(conn, id, user);
         if (failure is not null || p is null) return failure!;
 
         var frozen = Frozen(p.SessionStatus, p.Team1CheckedInAt, p.Team2CheckedInAt);
@@ -199,6 +216,19 @@ public static class ScrimScheduleEndpoints
         await ScrimJobScheduler.ScheduleAsync(conn, jobs, p.SessionId, p.ProposedAt);
         await ScrimTeamNotifier.SendAsync(conn, hub, p.ProposedByTeamId, p.SessionId, "scrim_time_accepted",
             "Match time confirmed", "The other team accepted your proposed time. Your scrim is scheduled.");
+
+        // S11 — email proposing team staff about acceptance (best-effort)
+        var acceptingTeamName = await conn.ExecuteScalarAsync<string?>(
+            "SELECT name FROM public.teams WHERE id = @teamId", new { teamId = responderTeam }) ?? "The other team";
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{p.SessionId}";
+        var scheduledAtStr = p.ProposedAt.ToString("ddd d MMM yyyy, HH:mm 'UTC'");
+        var s11StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, p.ProposedByTeamId);
+        var s11Data = JsonSerializer.Serialize(new { acceptingTeamName, scheduledAt = scheduledAtStr, sessionUrl });
+        foreach (var staffId in s11StaffIds)
+            jobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimTimeAccepted), s11Data, CancellationToken.None));
+
         return Results.Ok(new { proposal_id = id, session_id = p.SessionId, scheduled_at = p.ProposedAt });
     }
 
@@ -280,7 +310,8 @@ public static class ScrimScheduleEndpoints
     /// so a stray click can't pull the match out from under the other team.
     /// </summary>
     private static async Task<IResult> RequestClearAsync(
-        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs, IConfiguration config, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         using var conn = db.CreateConnection();
@@ -319,12 +350,24 @@ public static class ScrimScheduleEndpoints
         var other = myTeam == session.Team1Id ? session.Team2Id : session.Team1Id;
         await ScrimTeamNotifier.SendAsync(conn, hub, other, id, "scrim_time_proposed",
             "Clear the match time?", "The other team asked to clear the agreed time. Agree, or keep it.");
+
+        // S10 — email other team staff about clear-time request (best-effort)
+        var requestingTeamName = await conn.ExecuteScalarAsync<string?>(
+            "SELECT name FROM public.teams WHERE id = @teamId", new { teamId = myTeam }) ?? "The other team";
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+        var s10ClearStaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, other);
+        var s10ClearData = JsonSerializer.Serialize(new { requestingTeamName, sessionUrl });
+        foreach (var staffId in s10ClearStaffIds)
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimTimeClearRequested), s10ClearData, CancellationToken.None));
+
         return Results.Ok(request);
     }
 
     private static async Task<IResult> AcceptClearAsync(
         Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
-        IBackgroundJobClient jobs, CancellationToken ct)
+        IBackgroundJobClient jobs, IConfiguration config, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         using var conn = db.CreateConnection();
@@ -350,6 +393,16 @@ public static class ScrimScheduleEndpoints
         await ScrimTimeReset.ApplyAsync(conn, jobs, r.SessionId, clearCheckins: false);
         await ScrimTeamNotifier.SendAsync(conn, hub, r.RequestedByTeamId, r.SessionId, "scrim_time_reset",
             "Match time cleared", "The other team agreed. Propose a new time in the room.");
+
+        // S12 — email requesting team staff that the time was cleared (best-effort)
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{r.SessionId}";
+        var s12StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, r.RequestedByTeamId);
+        var s12Data = JsonSerializer.Serialize(new { sessionUrl });
+        foreach (var staffId in s12StaffIds)
+            jobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimTimeReset), s12Data, CancellationToken.None));
+
         return Results.Ok(new { request_id = id, session_id = r.SessionId });
     }
 

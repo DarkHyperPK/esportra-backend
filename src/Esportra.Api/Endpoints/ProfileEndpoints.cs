@@ -1437,6 +1437,84 @@ public static class ProfileEndpoints
             return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
         }).RequireAuthorization("Authenticated");
 
+        // ── PUT /api/profiles/me/email-lfg ───────────────────────────────────
+        app.MapPut("/api/profiles/me/email-lfg", async (
+            [FromBody] ToggleDiscordDmRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('email_lfg', @enabled::boolean)
+                WHERE id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid, enabled = req.Enabled });
+
+            return Results.Ok(new { success = true, email_lfg = req.Enabled });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/email-lfg ───────────────────────────────────
+        app.MapGet("/api/profiles/me/email-lfg", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var enabled = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT COALESCE((settings->>'email_lfg')::boolean, TRUE) FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { email_lfg = enabled });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/email-scrims ────────────────────────────────
+        app.MapPut("/api/profiles/me/email-scrims", async (
+            [FromBody] ToggleDiscordDmRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('email_scrims', @enabled::boolean)
+                WHERE id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid, enabled = req.Enabled });
+
+            return Results.Ok(new { success = true, email_scrims = req.Enabled });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/email-scrims ────────────────────────────────
+        app.MapGet("/api/profiles/me/email-scrims", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var enabled = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT COALESCE((settings->>'email_scrims')::boolean, TRUE) FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { email_scrims = enabled });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/profiles/me/timezone ────────────────────────────────────
         app.MapGet("/api/profiles/me/timezone", async (
             HttpContext ctx,

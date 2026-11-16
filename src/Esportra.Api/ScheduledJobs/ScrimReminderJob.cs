@@ -1,7 +1,9 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
@@ -17,6 +19,7 @@ namespace Esportra.Api.ScheduledJobs;
 public sealed class ScrimReminderJob(
     IDbConnectionFactory db,
     IHubContext<NotificationHub> hub,
+    CompetitiveEmailService emails,
     ILogger<ScrimReminderJob> logger)
 {
     [AutomaticRetry(Attempts = 2)]
@@ -69,6 +72,21 @@ public sealed class ScrimReminderJob(
 
         await TeamNotifications.PushAsync(hub, staffIds, "scrim_reminder_30min",
             "Scrim Reminder — 30 Min", message);
+
+        // S7 — email both teams' staff (opponent differs per team, so query each team separately)
+        var teamNames = (await conn.QueryAsync<(Guid Id, string Name)>(
+            "SELECT id, name FROM public.teams WHERE id IN (@t1, @t2)",
+            new { t1 = session.Team1Id, t2 = session.Team2Id })).ToList();
+        var t1Name = teamNames.FirstOrDefault(t => t.Id == session.Team1Id).Name ?? "the other team";
+        var t2Name = teamNames.FirstOrDefault(t => t.Id == session.Team2Id).Name ?? "the other team";
+        var sessionUrl = $"{emails.FrontendUrl}/competitive/scrims/sessions/{sessionId}";
+        var scheduledAtStr = session.ScheduledAt?.ToString("ddd d MMM yyyy, HH:mm 'UTC'") ?? "soon";
+        var t1StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, session.Team1Id);
+        var t2StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, session.Team2Id);
+        foreach (var staffId in t1StaffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimReminder, new { opponentName = t2Name, scheduledAt = scheduledAtStr, sessionUrl }, ct);
+        foreach (var staffId in t2StaffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimReminder, new { opponentName = t1Name, scheduledAt = scheduledAtStr, sessionUrl }, ct);
 
         logger.LogInformation("[ScrimReminderJob] Sent reminder for session {SessionId} to {Count} staff.", sessionId, staffIds.Count);
     }

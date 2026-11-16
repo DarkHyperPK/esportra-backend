@@ -1,7 +1,9 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
@@ -17,6 +19,7 @@ namespace Esportra.Api.ScheduledJobs;
 public sealed class ScrimCheckinWindowJob(
     IDbConnectionFactory db,
     IHubContext<NotificationHub> hub,
+    CompetitiveEmailService emails,
     ILogger<ScrimCheckinWindowJob> logger)
 {
     [AutomaticRetry(Attempts = 2)]
@@ -67,6 +70,21 @@ public sealed class ScrimCheckinWindowJob(
 
         await TeamNotifications.PushAsync(hub, staffIds, "scrim_checkin_window_open",
             "Check-in Window Open", message);
+
+        // S8 — email both teams' staff that check-in is open (opponent differs per team)
+        var teamNames = (await conn.QueryAsync<(Guid Id, string Name)>(
+            "SELECT id, name FROM public.teams WHERE id IN (@t1, @t2)",
+            new { t1 = opened.Team1Id, t2 = opened.Team2Id })).ToList();
+        var t1Name = teamNames.FirstOrDefault(t => t.Id == opened.Team1Id).Name ?? "the other team";
+        var t2Name = teamNames.FirstOrDefault(t => t.Id == opened.Team2Id).Name ?? "the other team";
+        var sessionUrl = $"{emails.FrontendUrl}/competitive/scrims/sessions/{sessionId}";
+        var scheduledAtStr = opened.ScheduledAt?.ToString("ddd d MMM yyyy, HH:mm 'UTC'") ?? "now";
+        var t1StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, opened.Team1Id);
+        var t2StaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, opened.Team2Id);
+        foreach (var staffId in t1StaffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimCheckinOpen, new { opponentName = t2Name, scheduledAt = scheduledAtStr, sessionUrl }, ct);
+        foreach (var staffId in t2StaffIds)
+            await emails.SendScrimAsync(staffId, EmailType.ScrimCheckinOpen, new { opponentName = t1Name, scheduledAt = scheduledAtStr, sessionUrl }, ct);
 
         logger.LogInformation("[ScrimCheckinWindowJob] Opened check-in window for session {SessionId}.", sessionId);
     }
