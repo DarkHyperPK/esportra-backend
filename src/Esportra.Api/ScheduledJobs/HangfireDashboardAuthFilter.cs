@@ -9,10 +9,18 @@ public sealed class HangfireDashboardAuthFilter : IDashboardAuthorizationFilter
     {
         var httpContext = context.GetHttpContext();
 
-        // Allow in development without auth
         var env = httpContext.RequestServices.GetService<IHostEnvironment>();
         if (env?.IsDevelopment() == true)
             return true;
+
+        var config = httpContext.RequestServices.GetService<IConfiguration>();
+        var dashboardKey = config?["HangfireDashboardKey"];
+        if (!string.IsNullOrEmpty(dashboardKey) &&
+            httpContext.Request.Query.TryGetValue("key", out var providedKey) &&
+            string.Equals(dashboardKey, providedKey, StringComparison.Ordinal))
+        {
+            return true;
+        }
 
         if (httpContext.Items.TryGetValue("UserContext", out var obj) &&
             obj is UserContext userCtx &&
