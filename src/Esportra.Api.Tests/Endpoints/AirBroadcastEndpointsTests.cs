@@ -326,4 +326,95 @@ public sealed class AirBroadcastEndpointsTests(ApiFactory factory)
         (await s.Client.PostAsJsonAsync($"/api/air/broadcast/matches/{s.Match}/prepare", new { requestId = Guid.NewGuid() })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await factory.CreateClient().GetAsync("/api/air/broadcast/matches")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task VetoActions_LetAirRunTheMatchRoomVeto_InOrder_Once_AndNoticeTheWebsite()
+    {
+        var s = await Seed();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE brkt_matches SET best_of=3 WHERE id=@id", new { id = s.Match });
+        var teams = await conn.QuerySingleAsync<(Guid A, Guid B)>("SELECT team1_id, team2_id FROM brkt_matches WHERE id=@id", new { id = s.Match });
+        var names = new[] { "Abyss", "Ascent", "Bind", "Corrode", "Haven", "Lotus", "Sunset" };
+        var pool = new List<string>();
+        foreach (var name in names) pool.Add((await MapId(conn, name)).ToString());
+        await conn.ExecuteAsync("""
+            INSERT INTO match_map_vetos (match_id, tournament_id, team1_id, team2_id, status, best_of, game, toss_winner_team_id, selected_map_pool)
+            VALUES (@match, @tournament, @a, @b, 'toss_choice_pending', 3, 'valorant', @b, @pool)
+            """, new { match = s.Match, tournament = s.Tournament, a = teams.A, b = teams.B, pool = pool.ToArray() });
+        var url = $"/api/air/broadcast/matches/{s.Match}/veto/actions";
+        async Task<(HttpStatusCode Status, JsonElement Body)> Act(string key, int? step, string action, string? map = null, string? side = null, bool? goFirst = null)
+        {
+            var res = await s.Client.PostAsJsonAsync(url, new { clientKey = key, expectedStep = step, action, map, side, goFirst });
+            var text = await res.Content.ReadAsStringAsync();
+            return (res.StatusCode, text.Length > 0 ? JsonDocument.Parse(text).RootElement : default);
+        }
+
+        // The toss winner (team 2) defers: team 1 bans first.
+        var toss = await Act("toss-0001", 0, "toss_choice", goFirst: false);
+        toss.Status.Should().Be(HttpStatusCode.OK, toss.Body.ToString());
+        toss.Body.GetProperty("turn").GetProperty("team").GetInt32().Should().Be(0);
+        var again = await Act("toss-0001", 0, "toss_choice", goFirst: false);
+        again.Body.ToString().Should().Be(toss.Body.ToString(), "a retry gets the first answer");
+
+        // Walk the veto as the match room asks for it: bans and picks from the pool, a side after every pick and on the decider.
+        var left = new Queue<string>(names);
+        var body = toss.Body;
+        for (var n = 0; n < 12 && body.GetProperty("status").GetString() != "completed"; n++)
+        {
+            var turn = body.GetProperty("turn");
+            var action = turn.GetProperty("action").GetString()!;
+            var step = body.GetProperty("step").GetInt32();
+            var map = action == "pick_side" ? null : left.Dequeue();
+            if (action == "pick_side") map = SideMap(body);
+            var r = await Act($"step-{n:0000}", step, action, map, action == "pick_side" ? (n % 2 == 0 ? "ATK" : "DEF") : null);
+            r.Status.Should().Be(HttpStatusCode.OK, $"{action} {map}: {r.Body}");
+            body = r.Body;
+        }
+        body.GetProperty("status").GetString().Should().Be("completed");
+        var steps = body.GetProperty("steps").EnumerateArray().ToArray();
+        steps.Count(x => x.GetProperty("action").GetString() == "ban").Should().Be(4);
+        steps.Where(x => x.GetProperty("action").GetString() != "ban").Should().OnlyContain(x => x.GetProperty("side").GetString() == "ATK" || x.GetProperty("side").GetString() == "DEF", "every pick and the decider carry a side");
+        steps.Should().Contain(x => x.GetProperty("action").GetString() == "decider");
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM match_map_veto_actions WHERE match_id=@match", new { match = s.Match })).Should().BeGreaterThan(8);
+
+        // A step made on the website in between: Air's old step number is refused with the current veto.
+        var stale = await Act("stale-0001", 1, "ban", "Abyss");
+        stale.Status.Should().Be(HttpStatusCode.Conflict);
+        stale.Body.GetProperty("veto").GetProperty("status").GetString().Should().Be("completed");
+
+        // Reset clears the match room's veto.
+        (await Act("reset-0001", null, "reset")).Status.Should().Be(HttpStatusCode.OK);
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM match_map_veto_actions WHERE match_id=@match", new { match = s.Match })).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task VetoActions_RefuseOtherAccounts_UnknownMaps_AndBadRequests()
+    {
+        var s = await Seed();
+        await using var conn = factory.Seeder.OpenConnection();
+        var teams = await conn.QuerySingleAsync<(Guid A, Guid B)>("SELECT team1_id, team2_id FROM brkt_matches WHERE id=@id", new { id = s.Match });
+        var pool = new[] { (await MapId(conn, "Bind")).ToString(), (await MapId(conn, "Lotus")).ToString() };
+        await conn.ExecuteAsync("""
+            INSERT INTO match_map_vetos (match_id, tournament_id, team1_id, team2_id, status, best_of, game, current_team_id, current_action, current_action_number, selected_map_pool)
+            VALUES (@match, @tournament, @a, @b, 'in_progress', 1, 'valorant', @a, 'ban', 1, @pool)
+            """, new { match = s.Match, tournament = s.Tournament, a = teams.A, b = teams.B, pool });
+        var url = $"/api/air/broadcast/matches/{s.Match}/veto/actions";
+        (await s.Client.PostAsJsonAsync(url, new { clientKey = "short", action = "ban", map = "Bind" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await s.Client.PostAsJsonAsync(url, new { clientKey = "key-00001", action = "pick_side", map = "Bind", side = "LEFT" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await s.Client.PostAsJsonAsync(url, new { clientKey = "key-00002", expectedStep = 1, action = "ban", map = "Haven" })).StatusCode.Should().Be(HttpStatusCode.BadRequest, "Haven is not in the pool");
+        var outsider = await Seed();
+        (await outsider.Client.PostAsJsonAsync(url, new { clientKey = "key-00003", action = "ban", map = "Bind" })).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var noDevice = factory.CreateAuthenticatedClient(s.User);
+        (await noDevice.PostAsJsonAsync(url, new { clientKey = "key-00004", action = "ban", map = "Bind" })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>The map a side is chosen on now: the last pick without a side, or the decider (the map left).</summary>
+    private static string SideMap(JsonElement body)
+    {
+        var steps = body.GetProperty("steps").EnumerateArray().ToArray();
+        var open = steps.LastOrDefault(x => x.GetProperty("action").GetString() == "pick" && x.GetProperty("side").ValueKind == JsonValueKind.Null);
+        if (open.ValueKind != JsonValueKind.Undefined) return open.GetProperty("map").GetString()!;
+        var used = steps.Select(x => x.GetProperty("map").GetString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return new[] { "Abyss", "Ascent", "Bind", "Corrode", "Haven", "Lotus", "Sunset" }.First(m => !used.Contains(m));
+    }
 }
