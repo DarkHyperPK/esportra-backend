@@ -2,20 +2,21 @@ using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Middleware;
+using Esportra.Api.ScoreboardOcr;
+using Esportra.Api.ScheduledJobs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
-using Esportra.Api.ScheduledJobs;
-using Esportra.Api.Services;
+using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Integrations;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
-using Esportra.Api.Middleware;
-using Esportra.Api.ScoreboardOcr;
-using Esportra.Infrastructure.Integrations;
-using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -592,6 +593,9 @@ public static class ScrimEndpoints
         [FromBody] MakeScrimOfferRequest req,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -649,7 +653,8 @@ public static class ScrimEndpoints
         var offerTeamName = await conn.ExecuteScalarAsync<string?>(
             "SELECT name FROM public.teams WHERE id = @id", new { id = req.OfferingTeamId });
 
-        foreach (var staffId in staffIds)
+        var staffIdList = staffIds.AsList();
+        foreach (var staffId in staffIdList)
         {
             await conn.ExecuteAsync(
                 """
@@ -659,6 +664,23 @@ public static class ScrimEndpoints
                 """,
                 new { userId = staffId, message = $"{offerTeamName ?? "A team"} sent a scrim offer." });
         }
+
+        await TeamNotifications.PushAsync(hub, staffIdList, "scrim_offer_received", "Scrim Offer",
+            $"{offerTeamName ?? "A team"} sent a scrim offer.");
+
+        // S1 — email listing team staff about the new offer (best-effort)
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var proposedAtStr = row.ProposedAt?.ToString("ddd d MMM yyyy, HH:mm 'UTC'") ?? "";
+        var workspaceUrl = $"{frontendUrl}/competitive/scrims/workspace";
+        var s1Data = JsonSerializer.Serialize(new
+        {
+            offeringTeamName = offerTeamName ?? "A team",
+            proposedAt = proposedAtStr,
+            workspaceUrl
+        });
+        foreach (var staffId in staffIdList)
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimOfferReceived), s1Data, CancellationToken.None));
 
         return Results.Created($"/api/scrims/offers/{row.Id}", row);
     }
@@ -762,6 +784,7 @@ public static class ScrimEndpoints
         IHubContext<NotificationHub> hub,
         IBackgroundJobClient backgroundJobs,
         ILoggerFactory loggerFactory,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -923,6 +946,20 @@ public static class ScrimEndpoints
             // Gap 1: real-time push after commit.
             await TeamNotifications.PushAsync(hub, staffIdList, "scrim_offer_accepted", "Scrim Offer Accepted", $"{listingTeamName ?? "A team"} accepted your scrim offer.");
 
+            // S2 — email offering team staff that the offer was accepted (best-effort)
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{session.Id}";
+            var scheduledAtStr = session.ScheduledAt?.ToString("ddd d MMM yyyy, HH:mm 'UTC'") ?? "";
+            var s2Data = JsonSerializer.Serialize(new
+            {
+                listingTeamName = listingTeamName ?? "A team",
+                sessionUrl,
+                scheduledAt = scheduledAtStr
+            });
+            foreach (var staffId in staffIdList)
+                backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                    staffId, "email_scrims", nameof(EmailType.ScrimOfferAccepted), s2Data, CancellationToken.None));
+
             return Results.Ok(session);
         }
         catch
@@ -934,13 +971,13 @@ public static class ScrimEndpoints
 
     // ── POST /api/scrims/offers/{id}/decline ───────────────────────────────────
 
-    private static async Task<IResult> DeclineOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
-        => await ChangeOfferStatusAsync(id, ctx, db, hub, "declined", requiresListingTeam: true);
+    private static async Task<IResult> DeclineOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, IBackgroundJobClient backgroundJobs, IConfiguration config, CancellationToken ct)
+        => await ChangeOfferStatusAsync(id, ctx, db, hub, "declined", requiresListingTeam: true, backgroundJobs, config);
 
     // ── POST /api/scrims/offers/{id}/withdraw ──────────────────────────────────
 
-    private static async Task<IResult> WithdrawOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
-        => await ChangeOfferStatusAsync(id, ctx, db, hub, "withdrawn", requiresListingTeam: false);
+    private static async Task<IResult> WithdrawOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, IBackgroundJobClient backgroundJobs, IConfiguration config, CancellationToken ct)
+        => await ChangeOfferStatusAsync(id, ctx, db, hub, "withdrawn", requiresListingTeam: false, backgroundJobs, config);
 
     // ── GET /api/scrims/sessions ───────────────────────────────────────────────
 
@@ -1200,7 +1237,7 @@ public static class ScrimEndpoints
 
     private static async Task<IResult> CancelSessionAsync(
         Guid id, HttpContext ctx, IDbConnectionFactory db, IBackgroundJobClient backgroundJobs,
-        IHubContext<NotificationHub> hub, CancellationToken ct)
+        IHubContext<NotificationHub> hub, IConfiguration config, CancellationToken ct)
     {
         var result = await TransitionSessionAsync(id, ctx, db, "cancelled", ["scheduled", "in_progress"]);
 
@@ -1229,7 +1266,7 @@ public static class ScrimEndpoints
                 }
             }
 
-            await NotifyOpponentOfCancelAsync(conn, hub, id);
+            await NotifyOpponentOfCancelAsync(conn, hub, id, backgroundJobs, config);
         }
 
         return result;
@@ -1240,7 +1277,8 @@ public static class ScrimEndpoints
     /// and agenda update without a refresh. Failures must never undo the cancel.
     /// </summary>
     private static async Task NotifyOpponentOfCancelAsync(
-        System.Data.IDbConnection conn, IHubContext<NotificationHub> hub, Guid sessionId)
+        System.Data.IDbConnection conn, IHubContext<NotificationHub> hub, Guid sessionId,
+        IBackgroundJobClient? backgroundJobs = null, IConfiguration? config = null)
     {
         try
         {
@@ -1277,6 +1315,21 @@ public static class ScrimEndpoints
                 new { notice.Type, notice.Title, notice.Message, SessionId = sessionId, UserIds = staffIds.ToArray() });
 
             await TeamNotifications.PushAsync(hub, staffIds, notice.Type, notice.Title, notice.Message);
+
+            // S6 — email opponent staff about cancellation (best-effort)
+            if (backgroundJobs is not null && config is not null)
+            {
+                var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+                var workspaceUrl = $"{frontendUrl}/competitive/scrims";
+                var s6Data = JsonSerializer.Serialize(new
+                {
+                    cancellerName = row.CancellerName ?? "The other team",
+                    workspaceUrl
+                });
+                foreach (var staffId in staffIds)
+                    backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                        staffId, "email_scrims", nameof(EmailType.ScrimSessionCancelled), s6Data, CancellationToken.None));
+            }
         }
         catch
         {
@@ -1292,6 +1345,8 @@ public static class ScrimEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1380,6 +1435,22 @@ public static class ScrimEndpoints
 
             await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_result_submitted", "Scrim Result Submitted", "The opposing team submitted a result report.");
 
+            // S13 — email other team staff about result submission (best-effort)
+            var reportingTeamName = await conn.ExecuteScalarAsync<string?>(
+                "SELECT name FROM public.teams WHERE id = @teamId", new { teamId = req.ReportingTeamId });
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+            var scoreStr = $"{req.Team1Score}–{req.Team2Score}";
+            var s13Data = JsonSerializer.Serialize(new
+            {
+                opponentName = reportingTeamName ?? "The other team",
+                score = scoreStr,
+                sessionUrl
+            });
+            foreach (var staffId in otherStaffIds)
+                backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                    staffId, "email_scrims", nameof(EmailType.ScrimResultSubmitted), s13Data, CancellationToken.None));
+
             return Results.Ok(report);
         }
         catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
@@ -1441,6 +1512,8 @@ public static class ScrimEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs,
+        IConfiguration config,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1511,6 +1584,22 @@ public static class ScrimEndpoints
         }
 
         await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_dispute_raised", "Scrim Dispute Raised", "The opposing team raised a dispute on your scrim session.");
+
+        // S14 — email other team staff about the dispute (best-effort)
+        {
+            var raisingTeamName = await conn.ExecuteScalarAsync<string?>(
+                "SELECT name FROM public.teams WHERE id = @teamId", new { teamId = req.RaisedByTeamId });
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+            var s14Data = JsonSerializer.Serialize(new
+            {
+                opponentName = raisingTeamName ?? "The other team",
+                sessionUrl
+            });
+            foreach (var staffId in otherStaffIds)
+                backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                    staffId, "email_scrims", nameof(EmailType.ScrimDisputeRaised), s14Data, CancellationToken.None));
+        }
 
         return Results.Created($"/api/scrims/sessions/{id}/dispute", dispute);
     }
@@ -2854,7 +2943,8 @@ public static class ScrimEndpoints
     }
 
     private static async Task<IResult> ChangeOfferStatusAsync(
-        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, string target, bool requiresListingTeam)
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, string target, bool requiresListingTeam,
+        IBackgroundJobClient? backgroundJobs = null, IConfiguration? config = null)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -2923,6 +3013,36 @@ public static class ScrimEndpoints
         }
 
         await TeamNotifications.PushAsync(hub, staffIds, notifType, notifTitle, notifMessage);
+
+        // S3/S4 — email affected staff (best-effort)
+        if (backgroundJobs is not null && config is not null)
+        {
+            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+            if (target == "declined")
+            {
+                // S3: offering team declined — email each with discoveryUrl
+                var discoveryUrl = $"{frontendUrl}/competitive/scrims";
+                var s3Data = JsonSerializer.Serialize(new { discoveryUrl });
+                foreach (var staffId in staffIds)
+                    backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                        staffId, "email_scrims", nameof(EmailType.ScrimOfferDeclined), s3Data, CancellationToken.None));
+            }
+            else if (target == "withdrawn")
+            {
+                // S4: offering team withdrew — email listing team staff
+                var offeringTeamName = await conn.ExecuteScalarAsync<string?>(
+                    "SELECT name FROM public.teams WHERE id = @id", new { id = offer.OfferingTeamId });
+                var workspaceUrl = $"{frontendUrl}/competitive/scrims/workspace";
+                var s4Data = JsonSerializer.Serialize(new
+                {
+                    offeringTeamName = offeringTeamName ?? "A team",
+                    workspaceUrl
+                });
+                foreach (var staffId in staffIds)
+                    backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                        staffId, "email_scrims", nameof(EmailType.ScrimOfferWithdrawn), s4Data, CancellationToken.None));
+            }
+        }
 
         return Results.Ok(updated);
     }

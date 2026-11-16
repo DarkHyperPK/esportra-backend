@@ -8,6 +8,8 @@ using Esportra.Api.Services;
 using Esportra.Api.Services.ProviderMatches;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
+using Esportra.Infrastructure.Email;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -208,8 +210,8 @@ public static class ScrimGameEndpoints
 
     private static async Task<IResult> ReportAsync(
         Guid id, int n, [FromBody] ReportGameRequest req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> hub, IConfiguration config, IProviderMatchIngestTrigger providerMatches,
-        ILoggerFactory loggerFactory)
+        IHubContext<NotificationHub> hub, IConfiguration config, IBackgroundJobClient backgroundJobs,
+        IProviderMatchIngestTrigger providerMatches, ILoggerFactory loggerFactory)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
@@ -284,6 +286,18 @@ public static class ScrimGameEndpoints
         var otherTeam = req.ReportedByTeamId == session.Team1Id ? session.Team2Id : session.Team1Id;
         await ScrimTeamNotifier.SendAsync(conn, hub, otherTeam, id, "scrim_result_submitted",
             "Map result to confirm", $"Game {n} was reported. Confirm it or open a dispute.");
+
+        // S13 — email other team staff about the game result report (best-effort)
+        var reportingTeamName = req.ReportedByTeamId == session.Team1Id ? session.Team1Name : session.Team2Name;
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+        var score = $"{req.Team1Score}–{req.Team2Score}";
+        var s13GameStaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, otherTeam);
+        var s13GameData = JsonSerializer.Serialize(new { opponentName = reportingTeamName, score, sessionUrl });
+        foreach (var staffId in s13GameStaffIds)
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimResultSubmitted), s13GameData, CancellationToken.None));
+
         return Results.Ok(Shape(row));
     }
 
@@ -369,7 +383,7 @@ public static class ScrimGameEndpoints
 
     private static async Task<IResult> DisputeAsync(
         Guid id, int n, [FromBody] DisputeGameRequest req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> hub)
+        IHubContext<NotificationHub> hub, IBackgroundJobClient backgroundJobs, IConfiguration config)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (string.IsNullOrWhiteSpace(req.Reason)) return Results.BadRequest(new { error = "reason is required." });
@@ -411,6 +425,17 @@ public static class ScrimGameEndpoints
 
         await ScrimTeamNotifier.SendAsync(conn, hub, game.ReportedByTeamId, id, "scrim_dispute_raised",
             "Map disputed", $"The other team disputed game {n}. You can keep playing the next maps.");
+
+        // S14 — email reporting team staff about the dispute (best-effort)
+        var disputingTeamName = req.RaisedByTeamId == session.Team1Id ? session.Team1Name : session.Team2Name;
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var sessionUrl = $"{frontendUrl}/competitive/scrims/sessions/{id}";
+        var s14GameStaffIds = await CompetitiveEmailService.GetTeamStaffIdsAsync(conn, game.ReportedByTeamId);
+        var s14GameData = JsonSerializer.Serialize(new { opponentName = disputingTeamName, sessionUrl });
+        foreach (var staffId in s14GameStaffIds)
+            backgroundJobs.Enqueue<CompetitiveEmailJob>(j => j.RunAsync(
+                staffId, "email_scrims", nameof(EmailType.ScrimDisputeRaised), s14GameData, CancellationToken.None));
+
         var updated = (await LoadGamesAsync(conn, id)).First(g => g.GameNumber == n);
         return Results.Ok(Shape(updated));
     }

@@ -162,7 +162,8 @@ public sealed class AuthorizationEnforcementMiddleware
     }
 
     private static bool ShouldSkip(string path) =>
-        path.StartsWith("/hubs/", StringComparison.OrdinalIgnoreCase);
+        path.StartsWith("/hubs/", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/api/hangfire", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Result of an authorization evaluation.</summary>
