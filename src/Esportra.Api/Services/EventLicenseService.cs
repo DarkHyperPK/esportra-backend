@@ -24,26 +24,60 @@ public class EventLicenseService(
     public string ContactUsUrl =>
         config["Licensing:ContactUsUrl"] ?? "https://esportra.com/contact";
 
+    // ── PROJ-078: Org bracket defaults ────────────────────────────────────
+
+    /// <summary>
+    /// Returns the org's default bracket max teams, or 32 (platform default)
+    /// when orgId is null (solo organizer without an organization).
+    /// 0 means unlimited.
+    /// </summary>
+    public async Task<int> GetOrgBracketMaxAsync(
+        Guid? orgId,
+        IDbConnection? existingConn = null,
+        IDbTransaction? existingTx = null,
+        CancellationToken ct = default)
+    {
+        if (!orgId.HasValue)
+            return 32;
+
+        var ownConn = existingConn is null;
+        var conn = existingConn ?? db.CreateConnection();
+        try
+        {
+            return await conn.ExecuteScalarAsync<int>(
+                "SELECT COALESCE(default_bracket_max_teams, 32) FROM organizations WHERE id = @orgId",
+                new { orgId = orgId.Value },
+                existingTx);
+        }
+        finally
+        {
+            if (ownConn) conn.Dispose();
+        }
+    }
+
     // ── BE-1: ReserveNew ────────────────────────────────────────────────────
 
     /// <summary>
     /// Reserves a new license for a tournament immediately after creation.
-    /// Returns bracket_upgrade_required when maxTeams > 32 (no INSERT).
+    /// Checks against the org's default_bracket_max_teams (PROJ-078) instead
+    /// of a hardcoded 32-team cap. Solo organizers without an org default to 32.
     /// The monthly quota trigger has been removed (PROJ-077); quota is now enforced at publish time.
     /// </summary>
     public async Task<LicenseResult<EventLicense>> ReserveNewAsync(
         Guid tournamentId,
         Guid userId,
-        Guid organizationId,
+        Guid? organizationId,
         int maxTeams,
         IDbConnection? existingConn = null,
         IDbTransaction? existingTx = null,
         CancellationToken ct = default)
     {
-        if (maxTeams > 32)
+        var orgMax = await GetOrgBracketMaxAsync(organizationId, existingConn, existingTx, ct);
+        var isUnlimited = orgMax == 0;
+        if (!isUnlimited && (maxTeams == 0 || maxTeams > orgMax))
             return LicenseResult<EventLicense>.Err("bracket_upgrade_required");
 
-        var tier = ResolveBracketTier(maxTeams);
+        var tier = maxTeams == 0 ? "custom" : ResolveBracketTier(maxTeams);
 
         var ownConn = existingConn is null;
         var conn = existingConn ?? db.CreateConnection();

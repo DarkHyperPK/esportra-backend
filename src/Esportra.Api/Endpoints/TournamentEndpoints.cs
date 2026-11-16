@@ -673,12 +673,6 @@ public static class TournamentEndpoints
             if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
                 return Results.Json(new { error = "Organizer role required to create tournaments" }, statusCode: 403);
 
-            // BE-2: Bracket tier gate — free tier supports ≤32 teams only
-            if (req.MaxTeams > 32)
-                return Results.Json(
-                    new { error = "bracket_upgrade_required", contact_us_url = licenseService.ContactUsUrl },
-                    statusCode: 402);
-
             using var conn = db.CreateConnection();
 
             // Secondary verified_roles check removed — PROJ-058 DB-2.
@@ -698,6 +692,17 @@ public static class TournamentEndpoints
                     req.MapPoolIds is { Count: > 0 }, req.Settings, conn, tx);
 
                 var organizationId = await ResolveOrganizationIdAsync(conn, tx, req.OrganizationId, userCtx.UserIdGuid);
+
+                // PROJ-078: Bracket tier gate — org-aware instead of hardcoded 32
+                var orgBracketMax = await licenseService.GetOrgBracketMaxAsync(organizationId, conn, tx, ct);
+                var orgIsUnlimited = orgBracketMax == 0;
+                if (!userCtx.IsSuperAdmin && !orgIsUnlimited && (req.MaxTeams == 0 || req.MaxTeams > orgBracketMax))
+                {
+                    tx.Rollback();
+                    return Results.Json(
+                        new { error = "bracket_upgrade_required", contact_us_url = licenseService.ContactUsUrl },
+                        statusCode: 402);
+                }
 
                 var reservedSlots = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings);
                 var validationError = ValidateCreateTournamentConstraints(req, reservedSlots);
@@ -792,10 +797,9 @@ public static class TournamentEndpoints
                 var tournamentId = (Guid)tournament.id;
 
                 // BE-2: Reserve an event license immediately after the tournament row is created.
-                // The quota trigger fires on INSERT; on quota_exhausted we roll back the whole transaction.
-                // organizationId was verified non-null by the earlier organizer gate; use .Value safely.
+                // PROJ-078: organizationId may be null for solo organizers without an org.
                 var licenseResult = await licenseService.ReserveNewAsync(
-                    tournamentId, userCtx.UserIdGuid, organizationId!.Value, req.MaxTeams, conn, tx, ct);
+                    tournamentId, userCtx.UserIdGuid, organizationId, req.MaxTeams, conn, tx, ct);
                 if (!licenseResult.IsOk)
                 {
                     tx.Rollback();
