@@ -639,6 +639,16 @@ public static class TournamentEndpoints
             var (unseededMatchCount, unscheduledFirstRoundCount, pendingEscalations) =
                 await FetchSchedulingCountsAsync(conn, tournamentId, canManage);
 
+            // Per-tournament license bracket cap — 0 means unlimited (custom tier).
+            // Only fetched for organizers/admins since it feeds registration UI hints.
+            int? licenseBracketMax = null;
+            if (canManage)
+            {
+                licenseBracketMax = await conn.ExecuteScalarAsync<int?>(
+                    "SELECT bracket_max_teams FROM event_licenses WHERE tournament_id = @tournamentId LIMIT 1",
+                    new { tournamentId });
+            }
+
             return Results.Ok(new
             {
                 tournament,
@@ -652,6 +662,7 @@ public static class TournamentEndpoints
                 unseededMatchCount,
                 unscheduledFirstRoundCount,
                 pendingEscalations,
+                licenseBracketMax,
             });
         }).RequireAuthorization("Authenticated");
 
