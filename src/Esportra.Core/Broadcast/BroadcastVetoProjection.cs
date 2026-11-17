@@ -65,7 +65,7 @@ public static class BroadcastVetoProjection
     private static string? NormalizeSide(string? side) => side?.ToLowerInvariant() switch
     {
         "attack" or "atk" or "attacking" => "ATK",
-        "defense" or "defend" or "def" or "defending" or "defence" => "DEF",
+        "defense" or "def" or "defending" or "defence" => "DEF",
         _ => null
     };
 }

@@ -702,7 +702,7 @@ public static class VetoEndpoints
             : new TokenVetoContext((Guid)row.match_id, (string)row.team_side, (bool)row.has_mock_participants);
     }
 
-    internal static async Task BroadcastHistoryAsync(
+    private static async Task BroadcastHistoryAsync(
         IHubContext<VetoHub> hub,
         VetoDbService veto,
         Guid matchId,

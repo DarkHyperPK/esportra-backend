@@ -20,22 +20,21 @@ public static partial class AirBroadcastEndpoints
         var match = matches[0];
         var state = await ReadVetoState(conn, match.Id, match.BestOf, settings, ct);
         var mapPool = await ReadMapPool(conn, match.TournamentId);
-        return Results.Ok(new { matchId = match.Id, state.Status, bestOf = match.BestOf, state.Steps, mapPool, state.Sequence, state.Turn, state.Toss, state.Step, team1Id = match.Team1Id, team2Id = match.Team2Id });
+        return Results.Ok(new { matchId = match.Id, state.Status, bestOf = match.BestOf, state.Steps, mapPool, state.Sequence, state.Turn, state.Toss, team1Id = match.Team1Id, team2Id = match.Team2Id });
     }
 
     internal sealed record AirVetoTurn(int Team, string Action, DateTime? StartedAt, int? Seconds);
     internal sealed record AirVetoOrderStep(string Action, int Team);
-    /// <summary>The veto as Air reads it. <c>Step</c> is the match room's action number: Air sends it back with each step it enters, so a step made on the website in between is noticed.</summary>
-    internal sealed record AirVetoState(string Status, BroadcastVetoStep[] Steps, AirVetoOrderStep[] Sequence, AirVetoTurn? Turn, object? Toss, int Step = 0);
+    internal sealed record AirVetoState(string Status, BroadcastVetoStep[] Steps, AirVetoOrderStep[] Sequence, AirVetoTurn? Turn, object? Toss);
     private sealed record VetoRow(string Status, Guid? Team1Id, Guid? CurrentTeamId, string? CurrentAction, DateTime? TurnStartedAt, int? TurnDurationSeconds,
-        Guid? TossWinnerTeamId, DateTime? TossCompletedAt, string? SelectedMap, string? Game, int Step);
+        Guid? TossWinnerTeamId, DateTime? TossCompletedAt, string? SelectedMap, string? Game);
 
     internal static async Task<AirVetoState> ReadVetoState(IDbConnection conn, Guid matchId, int bestOf, VetoSettingsService settings, CancellationToken ct, IDbTransaction? tx = null)
     {
         var row = await conn.QuerySingleOrDefaultAsync<VetoRow>("""
             SELECT v.status::text AS Status, v.team1_id AS Team1Id, v.current_team_id AS CurrentTeamId, v.current_action AS CurrentAction,
                    v.turn_started_at AS TurnStartedAt, v.turn_duration_seconds AS TurnDurationSeconds,
-                   v.toss_winner_team_id AS TossWinnerTeamId, v.toss_completed_at AS TossCompletedAt, gm.map_name AS SelectedMap, v.game AS Game, COALESCE(v.current_action_number,0) AS Step
+                   v.toss_winner_team_id AS TossWinnerTeamId, v.toss_completed_at AS TossCompletedAt, gm.map_name AS SelectedMap, v.game AS Game
             FROM match_map_vetos v LEFT JOIN game_maps gm ON gm.id::text = v.selected_map_id::text
             WHERE v.match_id=@matchId ORDER BY v.updated_at DESC NULLS LAST LIMIT 1
             """, new { matchId }, tx);
@@ -52,7 +51,7 @@ public static partial class AirBroadcastEndpoints
         object? toss = row.Status == "toss_choice_pending" || row.TossWinnerTeamId is not null
             ? new { pending = row.TossCompletedAt is null, winner = row.TossWinnerTeamId is null ? (int?)null : TeamOf(row.TossWinnerTeamId) }
             : null;
-        return new(row.Status, steps, sequence, turn, toss, row.Step);
+        return new(row.Status, steps, sequence, turn, toss);
     }
 
     /// <summary>The order the match's veto follows (a custom order when set), as the steps graphics draw: bans, picks and the decider.</summary>
