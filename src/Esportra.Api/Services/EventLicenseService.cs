@@ -44,10 +44,10 @@ public class EventLicenseService(
         var conn = existingConn ?? db.CreateConnection();
         try
         {
-            return await conn.ExecuteScalarAsync<int>(
+            return await conn.ExecuteScalarAsync<int?>(
                 "SELECT COALESCE(default_bracket_max_teams, 32) FROM organizations WHERE id = @orgId",
                 new { orgId = orgId.Value },
-                existingTx);
+                existingTx) ?? 32;
         }
         finally
         {
