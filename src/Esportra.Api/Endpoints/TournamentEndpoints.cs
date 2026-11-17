@@ -5270,9 +5270,10 @@ public static class TournamentEndpoints
                     return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
                 var maxTeams = (int)tournament.max_teams;
+                var effectiveMax = maxTeams > 0 ? maxTeams : 32;
                 var count = req.Count.HasValue
-                    ? Math.Clamp(req.Count.Value, 2, maxTeams)
-                    : maxTeams;
+                    ? Math.Clamp(req.Count.Value, 2, effectiveMax)
+                    : effectiveMax;
 
                 if (count < 2)
                     return Results.BadRequest(new { error = "At least 2 teams are required." });
