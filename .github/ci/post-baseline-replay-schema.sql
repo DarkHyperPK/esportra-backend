@@ -4338,7 +4338,7 @@ CREATE TABLE public.brkt_matches (
     team2_seed integer,
     CONSTRAINT brkt_matches_automated_report_status_check CHECK ((automated_report_status = ANY (ARRAY['idle'::text, 'processing'::text, 'verified'::text, 'failed'::text, 'partial'::text]))),
     CONSTRAINT brkt_matches_bracket_type_check CHECK ((bracket_type = ANY (ARRAY['winners'::text, 'losers'::text, 'final'::text, 'group'::text, 'swiss_round'::text, 'battle_royale_round'::text]))),
-    CONSTRAINT brkt_matches_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'scheduled'::text, 'in_progress'::text, 'completed'::text, 'disputed'::text])))
+    CONSTRAINT brkt_matches_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'scheduled'::text, 'in_progress'::text, 'completed'::text, 'disputed'::text, 'cancelled'::text])))
 );
 
 ALTER TABLE ONLY public.brkt_matches REPLICA IDENTITY FULL;
