@@ -6471,8 +6471,18 @@ public static class TournamentEndpoints
             else
             {
                 await conn.ExecuteAsync(
-                    "UPDATE tournament_stages SET status = 'active' WHERE tournament_id = @id AND status = 'completed'",
+                    "UPDATE tournament_stages SET status = 'active' WHERE tournament_id = @id AND status IN ('completed', 'cancelled')",
                     new { id });
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE brkt_matches SET status = 'pending'
+                    WHERE version_id IN (
+                        SELECT bv.id FROM brkt_versions bv
+                        JOIN tournament_stages ts ON ts.id = bv.stage_id
+                        WHERE ts.tournament_id = @id
+                    ) AND status = 'cancelled'
+                    """, new { id });
             }
         }
 
