@@ -141,49 +141,4 @@ public sealed class AirWorkspaceEndpointsTests(ApiFactory factory)
         (await other.Client.GetAsync($"/api/air/assets/{id}")).StatusCode.Should().Be(HttpStatusCode.NotFound);
         var download = await owner.Client.GetAsync($"/api/air/assets/{id}"); download.StatusCode.Should().Be(HttpStatusCode.OK); download.Content.Headers.ContentType!.MediaType.Should().Be("image/png");
     }
-
-    [Fact]
-    public async Task Access_requests_reach_admins_with_the_email_and_follow_decline_and_grant()
-    {
-        var owner = await Account(); var admin = await Account(true);
-        using (var conn = factory.Seeder.OpenConnection()) await conn.ExecuteAsync("UPDATE air_accounts SET valid_until=now()-interval '1 day' WHERE user_id=@id", new { id = owner.User });
-        var asked = await owner.Client.PostAsJsonAsync("/api/air/access-request", new AirAccessRequestInput("Finals this weekend"));
-        asked.StatusCode.Should().Be(HttpStatusCode.OK, await asked.Content.ReadAsStringAsync());
-        (await owner.Client.PostAsJsonAsync("/api/air/access-request", new AirAccessRequestInput("Two PCs please"))).StatusCode.Should().Be(HttpStatusCode.OK, "asking again updates the open request");
-        (await owner.Client.GetAsync("/api/admin/air/requests")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        var listed = await admin.Client.GetFromJsonAsync<JsonElement>("/api/admin/air/requests");
-        var row = listed.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("userId").GetGuid() == owner.User);
-        row.GetProperty("email").GetString().Should().Be($"{owner.User}@test.esportra.com");
-        row.GetProperty("note").GetString().Should().Be("Two PCs please");
-        var requestId = row.GetProperty("id").GetGuid();
-        var overview = await admin.Client.GetFromJsonAsync<JsonElement>("/api/admin/air/");
-        overview.GetProperty("counts").GetProperty("pendingRequests").GetInt64().Should().BeGreaterThan(0);
-        (await admin.Client.PostAsJsonAsync($"/api/admin/air/requests/{requestId}/decline", new { reason = "" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await admin.Client.PostAsJsonAsync($"/api/admin/air/requests/{requestId}/decline", new { reason = "Plan ended" })).StatusCode.Should().Be(HttpStatusCode.OK);
-        var mine = await owner.Client.GetFromJsonAsync<JsonElement>("/api/air/access-request");
-        mine.GetProperty("request").GetProperty("status").GetString().Should().Be("declined");
-        mine.GetProperty("request").GetProperty("reason").GetString().Should().Be("Plan ended");
-        ((int)(await owner.Client.PostAsJsonAsync("/api/air/access-request", new AirAccessRequestInput(""))).StatusCode).Should().Be(429, "a declined person asks again after 24 hours");
-        using (var conn = factory.Seeder.OpenConnection()) await conn.ExecuteAsync("UPDATE air_access_requests SET decided_at=now()-interval '2 days' WHERE id=@requestId", new { requestId });
-        (await owner.Client.PostAsJsonAsync("/api/air/access-request", new AirAccessRequestInput("Again"))).StatusCode.Should().Be(HttpStatusCode.OK);
-        var plan = (await admin.Client.GetFromJsonAsync<JsonElement>("/api/admin/air/plans")).GetProperty("items")[0].GetProperty("id").GetGuid();
-        (await admin.Client.PutAsJsonAsync($"/api/admin/air/customers/{owner.User}/access", new AirGrantRequest(plan, DateTimeOffset.UtcNow.AddDays(30), "active", "Approved request"))).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await owner.Client.GetFromJsonAsync<JsonElement>("/api/air/access-request")).GetProperty("request").GetProperty("status").GetString().Should().Be("granted");
-        (await owner.Client.PostAsJsonAsync("/api/air/access-request", new AirAccessRequestInput(""))).StatusCode.Should().Be(HttpStatusCode.Conflict, "nobody asks while they have access");
-        var customers = await admin.Client.GetFromJsonAsync<JsonElement>($"/api/admin/air/customers?q={owner.User.ToString()[..8]}");
-        customers.GetProperty("items").EnumerateArray().Should().ContainSingle(x => x.GetProperty("userId").GetGuid() == owner.User);
-    }
-
-    [Fact]
-    public async Task Access_can_be_given_by_email_before_someone_opens_Air()
-    {
-        var admin = await Account(true);
-        var newcomer = Guid.NewGuid(); await factory.Seeder.SeedAuthUserAsync(newcomer, $"newcomer-{newcomer:N}@example.com");
-        (await admin.Client.PostAsJsonAsync("/api/admin/air/customers/by-email", new AirCustomerByEmail("nobody@nowhere.example"))).StatusCode.Should().Be(HttpStatusCode.NotFound);
-        var found = await admin.Client.PostAsJsonAsync("/api/admin/air/customers/by-email", new AirCustomerByEmail($"NEWCOMER-{newcomer:N}@example.com"));
-        found.StatusCode.Should().Be(HttpStatusCode.OK, await found.Content.ReadAsStringAsync());
-        (await found.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("userId").GetGuid().Should().Be(newcomer);
-        var plan = (await admin.Client.GetFromJsonAsync<JsonElement>("/api/admin/air/plans")).GetProperty("items")[0].GetProperty("id").GetGuid();
-        (await admin.Client.PutAsJsonAsync($"/api/admin/air/customers/{newcomer}/access", new AirGrantRequest(plan, null, "active", "Partner production"))).StatusCode.Should().Be(HttpStatusCode.OK);
-    }
 }

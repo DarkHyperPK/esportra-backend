@@ -32,18 +32,16 @@ public static class AirAdminEndpoints
     private static async Task<IResult> Overview(HttpContext ctx, IDbConnectionFactory db, IConfiguration configuration)
     {
         if (!Admin(ctx)) return Forbidden(); using var connection = db.CreateConnection();
-        var counts = await connection.QuerySingleAsync<AirAdminCounts>("SELECT (SELECT count(*) FROM air_accounts) AS Customers,(SELECT count(*) FROM air_workspaces) AS Workspaces,(SELECT count(*) FROM air_devices WHERE status='active') AS ActiveDevices,(SELECT count(*) FROM air_devices WHERE status='active' AND last_seen_at>now()-interval '90 seconds') AS OnlineDevices,(SELECT count(*) FROM air_accounts WHERE status='active' AND valid_until<=now()) AS ExpiredAccess,(SELECT count(*) FROM air_access_requests WHERE status='pending') AS PendingRequests");
+        var counts = await connection.QuerySingleAsync<AirAdminCounts>("SELECT (SELECT count(*) FROM air_accounts) AS Customers,(SELECT count(*) FROM air_workspaces) AS Workspaces,(SELECT count(*) FROM air_devices WHERE status='active') AS ActiveDevices,(SELECT count(*) FROM air_devices WHERE status='active' AND last_seen_at>now()-interval '90 seconds') AS OnlineDevices,(SELECT count(*) FROM air_accounts WHERE status='active' AND valid_until<=now()) AS ExpiredAccess");
         return Results.Ok(new { counts, offlineSigningConfigured = !string.IsNullOrWhiteSpace(configuration["AirAccess:SigningPrivateKey"]), paymentsEnabled = false });
     }
-    private static async Task<IResult> List(string section, int? page, string? q, HttpContext ctx, IDbConnectionFactory db)
+    private static async Task<IResult> List(string section, int? page, HttpContext ctx, IDbConnectionFactory db)
     {
         if (!Admin(ctx)) return Forbidden(); var number = page ?? 1;
-        if (number is < 1 or > 10000 || q?.Length > 120) return Results.BadRequest();
-        var search = string.IsNullOrWhiteSpace(q) ? null : "%" + q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+        if (number is < 1 or > 10000) return Results.BadRequest();
         var sql = section switch
         {
-            "customers" => "SELECT a.user_id AS UserId,a.status,a.trial_started_at AS TrialStartedAt,a.trial_ends_at AS TrialEndsAt,a.valid_until AS ValidUntil,a.plan_id AS PlanId,p.name AS Plan,l.license_id AS LicenseCode,a.revision,a.override_device_limits AS OverrideDeviceLimits,a.production_limit AS ProductionLimit,a.capture_limit AS CaptureLimit,u.email AS Email,pr.username AS Name,(SELECT count(*) FROM air_devices d WHERE d.user_id=a.user_id AND d.status='active' AND d.mode='production') AS ProductionDevices,(SELECT max(d.last_seen_at) FROM air_devices d WHERE d.user_id=a.user_id) AS LastSeenAt FROM air_accounts a JOIN air_plans p ON p.id=a.plan_id JOIN licenses l ON l.id=a.license_id LEFT JOIN auth.users u ON u.id=a.user_id LEFT JOIN profiles pr ON pr.id=a.user_id WHERE (CAST(@search AS text) IS NULL OR u.email ILIKE @search ESCAPE '\\' OR pr.username ILIKE @search ESCAPE '\\') ORDER BY a.trial_started_at DESC LIMIT 50 OFFSET @offset",
-            "requests" => "SELECT r.id,r.user_id AS UserId,u.email AS Email,pr.username AS Name,r.note,r.status,r.reason,r.created_at AS CreatedAt,a.status AS AccountStatus,a.valid_until AS ValidUntil,a.trial_ends_at AS TrialEndsAt FROM air_access_requests r LEFT JOIN auth.users u ON u.id=r.user_id LEFT JOIN profiles pr ON pr.id=r.user_id LEFT JOIN air_accounts a ON a.user_id=r.user_id WHERE r.status='pending' OR r.updated_at>now()-interval '30 days' ORDER BY (r.status='pending') DESC,r.created_at DESC LIMIT 50 OFFSET @offset",
+            "customers" => "SELECT a.user_id AS UserId,a.status,a.trial_started_at AS TrialStartedAt,a.trial_ends_at AS TrialEndsAt,a.valid_until AS ValidUntil,a.plan_id AS PlanId,p.name AS Plan,l.license_id AS LicenseCode,a.revision,a.override_device_limits AS OverrideDeviceLimits,a.production_limit AS ProductionLimit,a.capture_limit AS CaptureLimit FROM air_accounts a JOIN air_plans p ON p.id=a.plan_id JOIN licenses l ON l.id=a.license_id ORDER BY a.trial_started_at DESC LIMIT 50 OFFSET @offset",
             "workspaces" => "SELECT w.id,w.name,w.owner_id AS OwnerId,w.created_at AS CreatedAt,(SELECT count(*) FROM air_projects p WHERE p.workspace_id=w.id AND p.archived_at IS NULL) AS Projects FROM air_workspaces w ORDER BY created_at DESC LIMIT 50 OFFSET @offset",
             "plans" => "SELECT id,name,production_limit AS ProductionLimit,capture_limit AS CaptureLimit,enabled FROM air_plans ORDER BY name LIMIT 50 OFFSET @offset",
             "devices" => "SELECT id,user_id AS UserId,name,mode,status,last_seen_at AS LastSeenAt,health,revision FROM air_devices ORDER BY last_seen_at DESC LIMIT 50 OFFSET @offset",
@@ -52,8 +50,8 @@ public static class AirAdminEndpoints
             _ => null
         };
         if (sql is null) return Results.NotFound(); using var connection = db.CreateConnection();
-        var type = section switch { "customers" => typeof(AirAdminCustomer), "requests" => typeof(AirAdminAccessRequest), "workspaces" => typeof(AirAdminWorkspace), "plans" => typeof(AirPlanView), "devices" => typeof(AirDeviceView), "activity" => typeof(AirAdminActivity), _ => typeof(AirReleaseView) };
-        var items = (await connection.QueryAsync(type, sql, new { offset = (number - 1) * 50, search })).ToArray();
+        var type = section switch { "customers" => typeof(AirAdminCustomer), "workspaces" => typeof(AirAdminWorkspace), "plans" => typeof(AirPlanView), "devices" => typeof(AirDeviceView), "activity" => typeof(AirAdminActivity), _ => typeof(AirReleaseView) };
+        var items = (await connection.QueryAsync(type, sql, new { offset = (number - 1) * 50 })).ToArray();
         return Results.Ok(new { items, page = number, hasMore = items.Length == 50 });
     }
     private static async Task<IResult> CreatePlan(AirPlanRequest request, HttpContext ctx, IDbConnectionFactory db)
@@ -83,7 +81,6 @@ public static class AirAdminEndpoints
         var licenseId = await connection.ExecuteScalarAsync<Guid?>("UPDATE air_accounts SET plan_id=@PlanId,valid_until=@ValidUntil,status=@Status,override_device_limits=@OverrideDeviceLimits,production_limit=@ProductionLimit,capture_limit=@CaptureLimit,revision=revision+1 WHERE user_id=@userId RETURNING license_id", new { userId, request.PlanId, request.ValidUntil, request.Status, request.OverrideDeviceLimits, request.ProductionLimit, request.CaptureLimit }, tx);
         if (licenseId is null) return Results.NotFound();
         await connection.ExecuteAsync("UPDATE licenses SET status=@Status,expires_at=@ValidUntil WHERE id=@id", new { id = licenseId.Value, request.Status, request.ValidUntil }, tx);
-        if (request.Status == "active") await AirAccessRequestEndpoints.MarkGranted(connection, tx, userId, AirAccountEndpoints.User(ctx));
         await Audit(connection, tx, ctx, "access_updated", userId, request.Reason); tx.Commit(); return Results.Ok(new { updated = true });
     }
     private static async Task<IResult> RevokeDevice(Guid deviceId, AirReasonRequest request, HttpContext ctx, IDbConnectionFactory db)
