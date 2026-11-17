@@ -929,7 +929,7 @@ public static class TournamentEndpoints
                     format               = @format,
                     game_mode            = @gameMode,
                     status               = CASE WHEN @status IS NOT NULL THEN @status::tournament_status ELSE status END,
-                    max_teams            = CASE WHEN @maxTeams = 0 THEN NULL WHEN @maxTeams IS NOT NULL THEN @maxTeams ELSE max_teams END,
+                    max_teams            = CASE WHEN @maxTeams IS NOT NULL THEN @maxTeams ELSE max_teams END,
                     team_size            = @teamSize,
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
