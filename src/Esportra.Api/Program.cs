@@ -731,6 +731,7 @@ app.MapAirProjectEndpoints();
 app.MapAirEventEndpoints();
 app.MapAirAssetEndpoints();
 app.MapAirAdminEndpoints();
+app.MapAirAccessRequestEndpoints();
 app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();

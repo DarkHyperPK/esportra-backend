@@ -167,7 +167,8 @@ public static class PrizeDistributionEndpoints
             if (row is null) return Results.NotFound();
 
             string format = (string?)row.final_format ?? "single_elimination";
-            int teamCount = (int?)row.max_teams ?? 8;
+            int rawMaxTeams = (int?)row.max_teams ?? 8;
+            int teamCount = rawMaxTeams > 0 ? rawMaxTeams : 32;
             decimal prizePool = (decimal?)row.prize_pool ?? 0m;
             string currency = (string?)row.currency ?? "USD";
 

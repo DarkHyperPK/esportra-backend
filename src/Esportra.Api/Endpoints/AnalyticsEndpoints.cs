@@ -134,7 +134,7 @@ public static class AnalyticsEndpoints
                 new { userId = userCtx.UserIdGuid });
 
             var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                "SELECT id, default_bracket_max_teams FROM organizations WHERE owner_id = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
             var hasOrganization = org is not null;
 
@@ -158,7 +158,8 @@ public static class AnalyticsEndpoints
                 organization_id = (object?)org?.id,
                 hasOrganization,
                 hasApprovedLicense,
-                canCreateTournament
+                canCreateTournament,
+                bracketMaxTeams = hasOrganization ? (int?)org!.default_bracket_max_teams : 32
             });
         }).RequireAuthorization("Authenticated");
     }

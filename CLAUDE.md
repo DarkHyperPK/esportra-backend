@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **NEVER push to `main`.** All work goes to `staging` only. Pushing to `main` triggers a production deployment. Only the user may authorize a main push with an explicit instruction naming `main`. No exception, no agent delegation override.
 
+**Deploying to staging:** Push directly to the `staging` branch. This triggers CI and auto-deploys to `deploy/staging`. Never ask the user to merge manually — merge the working branch into `staging` and push. Always pull `origin/staging` first to avoid rejection.
+
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.

@@ -247,6 +247,66 @@ public static class EventLicenseEndpoints
                 newLimit = req.MonthlyLimit,
             });
         }).RequireAuthorization("Admin");
+
+        // ── PROJ-078: PATCH /api/admin/organizations/{id}/bracket-defaults ───
+        // Sets the org's default bracket max teams. 0 = unlimited.
+        app.MapMethods("/api/admin/organizations/{id:guid}/bracket-defaults", ["PATCH"], async (
+            Guid id,
+            [FromBody] SetBracketDefaultsRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.MaxTeams < 0)
+                return Results.BadRequest(new { error = "max_teams_must_be_non_negative" });
+
+            using var conn = db.CreateConnection();
+
+            var orgExists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @id)",
+                new { id });
+            if (!orgExists)
+                return Results.NotFound(new { error = "Organization not found." });
+
+            var oldMax = await conn.ExecuteScalarAsync<int>(
+                "SELECT COALESCE(default_bracket_max_teams, 32) FROM organizations WHERE id = @id",
+                new { id });
+
+            await conn.ExecuteAsync(
+                "UPDATE organizations SET default_bracket_max_teams = @maxTeams WHERE id = @id",
+                new { maxTeams = req.MaxTeams, id });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO staff_audit_log
+                    (organization_id, actor_id, action, target_type, target_id, details)
+                VALUES
+                    (@orgId, @actorId, 'set_bracket_defaults', 'organization', @targetId::text, @details::jsonb)
+                """,
+                new
+                {
+                    orgId = id,
+                    actorId = userCtx.UserIdGuid,
+                    targetId = id.ToString(),
+                    details = JsonSerializer.Serialize(new
+                    {
+                        organization_id = id,
+                        old_max_teams = oldMax,
+                        new_max_teams = req.MaxTeams,
+                        actor_user_id = userCtx.UserIdGuid,
+                    }),
+                });
+
+            return Results.Ok(new
+            {
+                organizationId = id,
+                oldMaxTeams = oldMax,
+                newMaxTeams = req.MaxTeams,
+            });
+        }).RequireAuthorization("Admin");
     }
 }
 
@@ -254,3 +314,6 @@ public sealed record SetOrganizerProRequest(bool? Enabled = null, string? Bracke
 
 /// <summary>Request body for PATCH /api/admin/organizations/{id}/event-quota (PROJ-077).</summary>
 public sealed record SetEventQuotaRequest(int MonthlyLimit);
+
+/// <summary>Request body for PATCH /api/admin/organizations/{id}/bracket-defaults (PROJ-078). 0 = unlimited.</summary>
+public sealed record SetBracketDefaultsRequest(int MaxTeams);
